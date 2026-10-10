@@ -235,9 +235,9 @@
                 </option>
                 <option>
                     <name>CCDefines</name>
-                    <state>USE_STDPERIPH_DRIVER</state>
                     
-                    <state>STM32F10X_HD</state>
+                    
+                    <state>STM32F103xB</state>
                 </option>
                 <option>
                     <name>CCPreprocFile</name>
@@ -360,8 +360,7 @@
                     <name>CCIncludePath2</name>
                     <state>$PROJ_DIR$\..\inc</state>
                     <state>$PROJ_DIR$\..\CMSIS</state>
-                    <state>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\inc</state>
-                    <state>$PROJ_DIR$\..\ST</state>
+                    <state>$PROJ_DIR$\..\CMSIS\device</state>
                 </option>
                 <option>
                     <name>CCStdIncCheck</name>
@@ -785,11 +784,11 @@
                 </option>
                 <option>
                     <name>IlinkIcfOverride</name>
-                    <state>0</state>
+                    <state>1</state>
                 </option>
                 <option>
                     <name>IlinkIcfFile</name>
-                    <state>$TOOLKIT_DIR$\config\linker\ST\stm32f103x8.icf</state>
+                    <state>$PROJ_DIR$\bluepill_plc.icf</state>
                 </option>
                 <option>
                     <name>IlinkIcfFileSlave</name>
@@ -1355,9 +1354,9 @@
                 </option>
                 <option>
                     <name>CCDefines</name>
-                    <state>USE_STDPERIPH_DRIVER</state>
                     
-                    <state>STM32F10X_HD</state>
+                    
+                    <state>STM32F103xB</state>
                     <state>NDEBUG</state>
                 </option>
                 <option>
@@ -1481,8 +1480,7 @@
                     <name>CCIncludePath2</name>
                     <state>$PROJ_DIR$\..\inc</state>
                     <state>$PROJ_DIR$\..\CMSIS</state>
-                    <state>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\inc</state>
-                    <state>$PROJ_DIR$\..\ST</state>
+                    <state>$PROJ_DIR$\..\CMSIS\device</state>
                 </option>
                 <option>
                     <name>CCStdIncCheck</name>
@@ -1906,11 +1904,11 @@
                 </option>
                 <option>
                     <name>IlinkIcfOverride</name>
-                    <state>0</state>
+                    <state>1</state>
                 </option>
                 <option>
                     <name>IlinkIcfFile</name>
-                    <state>$TOOLKIT_DIR$\config\linker\ST\stm32f103x8.icf</state>
+                    <state>$PROJ_DIR$\bluepill_plc.icf</state>
                 </option>
                 <option>
                     <name>IlinkIcfFileSlave</name>
@@ -2254,27 +2252,17 @@
 
 
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_dma.c</name>
-        </file>
+        
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_flash.c</name>
-        </file>
+        
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_gpio.c</name>
-        </file>
+        
 
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_rcc.c</name>
-        </file>
+        
 
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_tim.c</name>
-        </file>
+        
 
 </group>
     <group>
@@ -2298,10 +2286,10 @@
     <group>
         <name>ST</name>
         <file>
-            <name>$PROJ_DIR$\..\ST\startup_stm32f10x_hd.s</name>
+            <name>$PROJ_DIR$\..\CMSIS\device\startup_stm32f103xb.s</name>
         </file>
         <file>
-            <name>$PROJ_DIR$\..\ST\system_stm32f10x.c</name>
+            <name>$PROJ_DIR$\..\CMSIS\device\system_stm32f1xx.c</name>
         </file>
     </group>
     <projectSettings>
@@ -2309,4 +2297,16 @@
             <resolveSourceForBinaries>true</resolveSourceForBinaries>
         </general>
     </projectSettings>
+    <group>
+        <name>Register drivers</name>
+        <file>
+            <name>$PROJ_DIR$\..\src\board_clock.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_flash.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_memory.c</name>
+        </file>
+    </group>
 </project>

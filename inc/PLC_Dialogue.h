@@ -7,7 +7,8 @@ Version:    1.1
 ************************************************************/
 #ifndef __PLC_Dialogue_H__
 #define __PLC_Dialogue_H__
-#include "stm32f10x.h"
+#include "platform.h"
+#include "plc_flash.h"
 
 #ifdef __cplusplus
 extern "C"  {
@@ -58,24 +59,24 @@ extern const unsigned char PLC_BIT_AND[];
 #define AddrB_CE        0x2700  // C000 - C255 enable coil; original annotation incomplete.
 #define AddrB_Tx        0x3800  // T000 - T255 coil; purpose not documented in the original source.
 
-#define ROM_ADDR        0x0800C000
+#define ROM_ADDR        PLC_PROGRAM_BASE
 #define START_ADDR      0x005C
 #define PLC_START_ADDR  (u16*)(ROM_ADDR + START_ADDR)
 
-#define MAXSTEP         8000
+#define MAXSTEP         6000 /* Fits 14 KB program storage on STM32F103C8. */
 #define MAXTIMER        256
 #define MAXDXXX         2000
 
 #define SRAM_ADDR       0x2000
-#define STEP_ADDR       SRAM_ADDR - ( MAXSTEP / 8 + 16 ) & 0xFF00
-#define RAM_ADDR        SRAM_BASE + SRAM_ADDR    //PLC_RAM start address
-#define RAM_ACC_ADDR    RAM_ADDR - 4
-#define RAM_STEP_ADDR   RAM_ADDR - ( MAXSTEP / 8 + 16 ) & 0xFF00
-#define RAM_T_ADDR      RAM_ADDR + Addr_TVal  //PLC T start address
-#define RAM_C_ADDR      RAM_ADDR + Addr_CVal  //PLC C start address
-#define RAM_D0000_ADDR  RAM_ADDR + Addr_D0000 //PLC D start address
-#define RAM_D1000_ADDR  RAM_ADDR + Addr_D1000 //PLC D1000 start address
-#define RAM_D8000_ADDR  RAM_ADDR + Addr_D8000 //PLC D8000 start address
+#define STEP_ADDR       0x1C00UL /* Reserved pulse-state bitmap, below PLC RAM. */
+#define RAM_ADDR        (SRAM_BASE + SRAM_ADDR)    //PLC_RAM start address
+#define RAM_ACC_ADDR    (RAM_ADDR - 4) 
+#define RAM_STEP_ADDR   (SRAM_BASE + STEP_ADDR)
+#define RAM_T_ADDR      (RAM_ADDR + Addr_TVal) //PLC T start address
+#define RAM_C_ADDR      (RAM_ADDR + Addr_CVal) //PLC C start address
+#define RAM_D0000_ADDR  (RAM_ADDR + Addr_D0000) //PLC D start address
+#define RAM_D1000_ADDR  (RAM_ADDR + Addr_D1000) //PLC D1000 start address
+#define RAM_D8000_ADDR  (RAM_ADDR + Addr_D8000) //PLC D8000 start address
 
 #define ROTATE_LEFT(x, s, n)        ((x) << (n)) | ((x) >> ((s) - (n)))      //Rotate left: x is the data, s is its bit width, and n is the rotation count
 #define ROTATE_RIGHT(x, s, n)       ((x) >> (n)) | ((x) << ((s) - (n)))      //Rotate right: x is the data, s is its bit width, and n is the rotation count
@@ -84,25 +85,25 @@ extern const unsigned char PLC_BIT_AND[];
 
 #define PLC_v_z_addr(x)    ((x) / (0x4000))         //Used for V and Z
 
-#define PLC_Bu(x)          (*( u8*)(u32)(x))              //Byte access  R/W RAM  R ROM
-#define PLC_Hu(x)          (*(u16*)(u32)(x))            //Halfword access  R/W RAM  R ROM
-#define PLC_Wu(x)          (*(u32*)(u32)(x))            //Halfword access  R/W RAM  R ROM
+#define PLC_Bu(x)          (*(volatile u8*)(u32)(x))              //Byte access  R/W RAM  R ROM
+#define PLC_Hu(x)          (*(volatile u16*)(u32)(x))            //Halfword access  R/W RAM  R ROM
+#define PLC_Wu(x)          (*(volatile u32*)(u32)(x))            //Halfword access  R/W RAM  R ROM
 
-#define PLC_Hs(x)          (*(s16*)(u32)(x))            //Halfword access  R/W RAM  R ROM
-#define PLC_Ws(x)          (*(s32*)(u32)(x))            //Word access  R/W RAM  R ROM
+#define PLC_Hs(x)          (*(volatile s16*)(u32)(x))            //Halfword access  R/W RAM  R ROM
+#define PLC_Ws(x)          (*(volatile s32*)(u32)(x))            //Word access  R/W RAM  R ROM
 
-#define PLC_Du(x)          (*(int64_t*)(u32)(x))        //Word access  R/W RAM  R ROM
+#define PLC_Du(x)          (*(volatile int64_t*)(u32)(x))        //Word access  R/W RAM  R ROM
 
-#define PLC_Wf(x)          (*(float*)(u32)(x))        //Word access  R/W RAM  R ROM
+#define PLC_Wf(x)          (*(volatile float*)(u32)(x))        //Word access  R/W RAM  R ROM
 
 #define valueF             FLOAT.data                   //Used for floating-point output
 
-#define PLC_8BIT(x)        PLC_Bu(RAM_ADDR + x)
-#define PLC_16BIT(x)       PLC_Hu(RAM_ADDR + x)
-#define PLC_32BIT(x)       PLC_Wu(RAM_ADDR + x)
+#define PLC_8BIT(x)        PLC_Bu(RAM_ADDR + (x))
+#define PLC_16BIT(x)       PLC_Hu(RAM_ADDR + (x))
+#define PLC_32BIT(x)       PLC_Wu(RAM_ADDR + (x))
 
-#define PLC_ROM_8BIT(x)    PLC_Bu(ROM_ADDR + x)
-#define PLC_ROM_16BIT(x)   PLC_Hu(ROM_ADDR + x)
+#define PLC_ROM_8BIT(x)    PLC_Bu(ROM_ADDR + (x))
+#define PLC_ROM_16BIT(x)   PLC_Hu(ROM_ADDR + (x))
 
 #define PLC_BIT_TEST1(x)    (PLC_Bu(RAM_ADDR + ((x)/8)) & PLC_BIT_OR[(x)%8])
 #define PLC_BIT_ON1(x)      (PLC_Bu(RAM_ADDR + ((x)/8)) |= PLC_BIT_OR[(x)%8])

@@ -3435,27 +3435,17 @@
 
 
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_dma.c</name>
-        </file>
+        
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_flash.c</name>
-        </file>
+        
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_gpio.c</name>
-        </file>
+        
 
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_rcc.c</name>
-        </file>
+        
 
 
-        <file>
-            <name>$PROJ_DIR$\..\STM32F10x_StdPeriph_Driver\src\stm32f10x_tim.c</name>
-        </file>
+        
 
 </group>
     <group>
@@ -3479,10 +3469,22 @@
     <group>
         <name>ST</name>
         <file>
-            <name>$PROJ_DIR$\..\ST\startup_stm32f10x_hd.s</name>
+            <name>$PROJ_DIR$\..\CMSIS\device\startup_stm32f103xb.s</name>
         </file>
         <file>
-            <name>$PROJ_DIR$\..\ST\system_stm32f10x.c</name>
+            <name>$PROJ_DIR$\..\CMSIS\device\system_stm32f1xx.c</name>
+        </file>
+    </group>
+    <group>
+        <name>Register drivers</name>
+        <file>
+            <name>$PROJ_DIR$\..\src\board_clock.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_flash.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_memory.c</name>
         </file>
     </group>
 </project>
