@@ -62,7 +62,7 @@
                 </option>
                 <option>
                     <name>RTDescription</name>
-                    <state>Use the normal configuration of the C/C++ runtime library. No locale interface, C locale, no file descriptor support, no multibytes in printf and scanf, and no hex floats in strtod.</state>
+                    <state>A compact configuration of the C/C++14 runtime library. No locale interface, C locale, no file descriptor support, no multibytes in printf and scanf, and no hex floats in strtod.</state>
                 </option>
                 <option>
                     <name>OGProductVersion</name>
@@ -235,9 +235,8 @@
                 </option>
                 <option>
                     <name>CCDefines</name>
-                    
-                    
                     <state>STM32F103xB</state>
+                    <state>PLC_RUNTIME_EXPERIMENTAL=1</state>
                 </option>
                 <option>
                     <name>CCPreprocFile</name>
@@ -1354,8 +1353,6 @@
                 </option>
                 <option>
                     <name>CCDefines</name>
-                    
-                    
                     <state>STM32F103xB</state>
                     <state>NDEBUG</state>
                 </option>
@@ -2247,31 +2244,22 @@
         </file>
     </group>
     <group>
-        <name>SPL</name>
-
-
-
-
-        
-
-        
-
-        
-
-
-        
-
-
-        
-
-</group>
+        <name>Register drivers</name>
+        <file>
+            <name>$PROJ_DIR$\..\src\board_clock.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_flash.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_memory.c</name>
+        </file>
+    </group>
     <group>
         <name>src</name>
         <file>
             <name>$PROJ_DIR$\..\src\ladder.c</name>
         </file>
-
-
         <file>
             <name>$PROJ_DIR$\..\src\PLC_Com.c</name>
         </file>
@@ -2281,8 +2269,7 @@
         <file>
             <name>$PROJ_DIR$\..\src\RTC.C</name>
         </file>
-
-</group>
+    </group>
     <group>
         <name>ST</name>
         <file>
@@ -2297,16 +2284,4 @@
             <resolveSourceForBinaries>true</resolveSourceForBinaries>
         </general>
     </projectSettings>
-    <group>
-        <name>Register drivers</name>
-        <file>
-            <name>$PROJ_DIR$\..\src\board_clock.c</name>
-        </file>
-        <file>
-            <name>$PROJ_DIR$\..\src\plc_flash.c</name>
-        </file>
-        <file>
-            <name>$PROJ_DIR$\..\src\plc_memory.c</name>
-        </file>
-    </group>
 </project>

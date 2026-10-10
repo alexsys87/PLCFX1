@@ -3430,52 +3430,6 @@
         </file>
     </group>
     <group>
-        <name>SPL</name>
-
-
-
-
-        
-
-        
-
-        
-
-
-        
-
-
-        
-
-</group>
-    <group>
-        <name>src</name>
-        <file>
-            <name>$PROJ_DIR$\..\src\ladder.c</name>
-        </file>
-
-
-        <file>
-            <name>$PROJ_DIR$\..\src\PLC_Com.c</name>
-        </file>
-        <file>
-            <name>$PROJ_DIR$\..\src\PLC_IO.C</name>
-        </file>
-        <file>
-            <name>$PROJ_DIR$\..\src\RTC.C</name>
-        </file>
-
-</group>
-    <group>
-        <name>ST</name>
-        <file>
-            <name>$PROJ_DIR$\..\CMSIS\device\startup_stm32f103xb.s</name>
-        </file>
-        <file>
-            <name>$PROJ_DIR$\..\CMSIS\device\system_stm32f1xx.c</name>
-        </file>
-    </group>
-    <group>
         <name>Register drivers</name>
         <file>
             <name>$PROJ_DIR$\..\src\board_clock.c</name>
@@ -3485,6 +3439,30 @@
         </file>
         <file>
             <name>$PROJ_DIR$\..\src\plc_memory.c</name>
+        </file>
+    </group>
+    <group>
+        <name>src</name>
+        <file>
+            <name>$PROJ_DIR$\..\src\ladder.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\PLC_Com.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\PLC_IO.C</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\RTC.C</name>
+        </file>
+    </group>
+    <group>
+        <name>ST</name>
+        <file>
+            <name>$PROJ_DIR$\..\CMSIS\device\startup_stm32f103xb.s</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\CMSIS\device\system_stm32f1xx.c</name>
         </file>
     </group>
 </project>
