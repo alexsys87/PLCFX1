@@ -907,7 +907,7 @@ void TIM_GenerateEvent(TIM_TypeDef* TIMx, uint16_t TIM_EventSource)
 }
 
 /**
-  * @brief  Configures the TIMx’s DMA interface.
+  * @brief  Configures the TIMx's DMA interface.
   * @param  TIMx: where x can be  1, 2, 3, 4, 5, 8, 15, 16 or 17 to select 
   *   the TIM peripheral.
   * @param  TIM_DMABase: DMA Base address.
@@ -935,7 +935,7 @@ void TIM_DMAConfig(TIM_TypeDef* TIMx, uint16_t TIM_DMABase, uint16_t TIM_DMABurs
 }
 
 /**
-  * @brief  Enables or disables the TIMx’s DMA Requests.
+  * @brief  Enables or disables the TIMx's DMA Requests.
   * @param  TIMx: where x can be  1, 2, 3, 4, 5, 6, 7, 8, 15, 16 or 17 
   *   to select the TIM peripheral. 
   * @param  TIM_DMASource: specifies the DMA Request sources.
@@ -2125,7 +2125,7 @@ void TIM_UpdateRequestConfig(TIM_TypeDef* TIMx, uint16_t TIM_UpdateSource)
 }
 
 /**
-  * @brief  Enables or disables the TIMx’s Hall sensor interface.
+  * @brief  Enables or disables the TIMx's Hall sensor interface.
   * @param  TIMx: where x can be 1, 2, 3, 4, 5 or 8 to select the TIM peripheral.
   * @param  NewState: new state of the TIMx Hall sensor interface.
   *   This parameter can be: ENABLE or DISABLE.
@@ -2149,7 +2149,7 @@ void TIM_SelectHallSensor(TIM_TypeDef* TIMx, FunctionalState NewState)
 }
 
 /**
-  * @brief  Selects the TIMx’s One Pulse Mode.
+  * @brief  Selects the TIMx's One Pulse Mode.
   * @param  TIMx: where x can be 1 to 17 to select the TIM peripheral.
   * @param  TIM_OPMode: specifies the OPM Mode to be used.
   *   This parameter can be one of the following values:
