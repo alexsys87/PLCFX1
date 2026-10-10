@@ -6,7 +6,7 @@
 // Online store: shop182385147.taobao.com
 /********************************************************/
 
-#include "stm32f10x.h"
+#include "platform.h"
 #include <stdio.h>
 #include "plc_io.h"
 #include "PLC_Dialogue.h"
@@ -16,8 +16,8 @@
 
 //extern unsigned char Y0P,Y1P;                //
 //extern unsigned short Plus_CMP0,Plus_CMP1;   //Pulse flag bits
-extern u8  X_DIY;                             //Filter time
-extern u16 PLC_RUN_TIME;                     //Scan time
+extern u16 X_DIY;                             //Filter time
+extern volatile u16 PLC_RUN_TIME;                     //Scan time
 extern u8 PLC_UPDATE_PROG;
 extern void RTC_Set(u16 syear,u8 smon,u8 sday,u8 hour,u8 min,u8 sec);//Time-setting routine
 extern void PLC_IO_Refresh(void);            //I/O output refresh routine
@@ -58,7 +58,11 @@ u32 Transfer = 0;                        //Used for multi-point and block transf
 float_union FLOAT;
 u64_union   u64d; //,u64d2;
 
+#ifdef __ICCARM__
+#define WEAK __weak
+#else
 #define WEAK __attribute__ ((weak))
+#endif
 void WEAK ERR(void);
 void WEAK NOP(void);
 
@@ -734,11 +738,11 @@ u32 type_of, temp1, temp2, temp3, temp4;
     case  0x8486: temp = MOV_K()&0x00000FFF; bitT_get = 1; break; //Transfer grouped bit-device values such as K4M0    
     case  0x8488: temp = MOV_K()&0x0000FFFF; bitT_get = 1; break; //Transfer grouped bit-device values such as K4M0      
 
-    case  0x8680: temp = PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ); break; //Calculate the D address D8000
-    case  0x8682: temp = PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ); break; //Calculate the T address 
-    case  0x8684: temp = PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ); break; //Calculate the C address
-    case  0x8686: temp = PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ); break; //Calculate the D address 
-    case  0x8688: temp = PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ); break; //D1000 and above
+    case  0x8680: temp = PLC_Hs(RAM_D8000_ADDR + (( temp2 + Transfer) << 1) ); break; //Calculate the D address D8000
+    case  0x8682: temp = PLC_Hs(RAM_T_ADDR     + (( temp2 + Transfer) << 1) ); break; //Calculate the T address 
+    case  0x8684: temp = PLC_Hs(RAM_C_ADDR     + (( temp2 + Transfer) << 1) ); break; //Calculate the C address
+    case  0x8686: temp = PLC_Hs(RAM_D0000_ADDR + (( temp2 + Transfer) << 1) ); break; //Calculate the D address 
+    case  0x8688: temp = PLC_Hs(RAM_D1000_ADDR + (( temp2 + Transfer) << 1) ); break; //D1000 and above
     /************************************************K register: V indexing*******************************************************************/
     case  0x9080: temp = temp2 + D8029; break; //Calculate the K address with V0 indexing
     case  0x9081: temp = temp2 + D8183; break; //Calculate the K address with V1 indexing
@@ -858,11 +862,11 @@ s32_union tempD;
     case  0x848E: tempD.d32 = MOV_K()&0x0FFFFFFF; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
     case  0x8490: tempD.d32 = MOV_K();            bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0   
       
-    case  0x8680: tempD.d32 = PLC_Ws(RAM_D8000_ADDR + temp2 << 1); PLC_PC++; break;                 //Calculate the D address D8000
-    case  0x8682: tempD.d32 = PLC_Ws(RAM_T_ADDR     + temp2 << 1); PLC_PC++; break;                 //Calculate the T address 
-    case  0x8684: tempD.d32 = PLC_Ws(RAM_C_ADDR     + temp2 << 1); PLC_PC++; break;                 //Calculate the C address
-    case  0x8686: tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp2 << 1); PLC_PC++; break;                 //Calculate the D address 
-    case  0x8688: tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp2 << 1); PLC_PC++; break;                 //D1000 and above
+    case  0x8680: tempD.d32 = PLC_Ws(RAM_D8000_ADDR + (temp2 << 1)); PLC_PC++; break;                 //Calculate the D address D8000
+    case  0x8682: tempD.d32 = PLC_Ws(RAM_T_ADDR     + (temp2 << 1)); PLC_PC++; break;                 //Calculate the T address 
+    case  0x8684: tempD.d32 = PLC_Ws(RAM_C_ADDR     + (temp2 << 1)); PLC_PC++; break;                 //Calculate the C address
+    case  0x8686: tempD.d32 = PLC_Ws(RAM_D0000_ADDR + (temp2 << 1)); PLC_PC++; break;                 //Calculate the D address 
+    case  0x8688: tempD.d32 = PLC_Ws(RAM_D1000_ADDR + (temp2 << 1)); PLC_PC++; break;                 //D1000 and above
 
     case  0xA080: tempD.d16[0] = temp2 + D8028; PLC_PC++; tempD.d16[1] = get_value() + D8029; PLC_PC -= 2; break; //Calculate the K address with Z0 indexing
     case  0xA081: tempD.d16[0] = temp2 + D8182; PLC_PC++; tempD.d16[1] = get_value() + D8183; PLC_PC -= 2; break; //Calculate the K address with Z1 indexing
@@ -906,16 +910,16 @@ s32_union tempD;
     case  0xA490: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0 with V0-V3 indexing
     case  0xA491: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0 with V4-V7 indexing  
     /************************************************T register: Z indexing*******************************************************************/
-    case  0xA682: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//Calculate the T address with Z0-Z3 indexing
-    case  0xA683: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//Calculate the T address with Z4-Z7 indexing
+    case  0xA682: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + (temp << 1)); PLC_PC++;} break;//Calculate the T address with Z0-Z3 indexing
+    case  0xA683: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + (temp << 1)); PLC_PC++;} break;//Calculate the T address with Z4-Z7 indexing
     /************************************************C register: Z indexing*******************************************************************/
-    case  0xA684: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//Calculate the C address with Z0-Z3 indexing
-    case  0xA685: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//Calculate the C address with Z4-Z7 indexing
+    case  0xA684: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + (temp << 1)); PLC_PC++;} break;//Calculate the C address with Z0-Z3 indexing
+    case  0xA685: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + (temp << 1)); PLC_PC++;} break;//Calculate the C address with Z4-Z7 indexing
     /************************************************D register: Z indexing*******************************************************************/
-    case  0xA686: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//Calculate the D address with Z0-Z3 indexing
-    case  0xA687: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//Calculate the D address with Z4-Z7 indexing
-    case  0xA688: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//D1000 and above with Z0-Z3 indexing
-    case  0xA689: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//D1000 and above with Z4-Z7 indexing      
+    case  0xA686: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + (temp << 1)); PLC_PC++;} break;//Calculate the D address with Z0-Z3 indexing
+    case  0xA687: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + (temp << 1)); PLC_PC++;} break;//Calculate the D address with Z4-Z7 indexing
+    case  0xA688: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + (temp << 1)); PLC_PC++;} break;//D1000 and above with Z0-Z3 indexing
+    case  0xA689: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + (temp << 1)); PLC_PC++;} break;//D1000 and above with Z4-Z7 indexing      
   }
   PLC_PC += 2;
   return tempD.d32;
@@ -945,11 +949,11 @@ u32 type_of, temp1, temp2, temp3, temp4;
     case  0x8486: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
     case  0x8488: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
     
-    case  0x8680: PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the D address D8000
-    case  0x8682: PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the T address 
-    case  0x8684: PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the C address
-    case  0x8686: PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the D address 
-    case  0x8688: PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //D1000 and above
+    case  0x8680: PLC_Hs(RAM_D8000_ADDR + (( temp2 + Transfer) << 1) ) = (u16)value; PLC_PC++; break; //Calculate the D address D8000
+    case  0x8682: PLC_Hs(RAM_T_ADDR     + (( temp2 + Transfer) << 1) ) = (u16)value; PLC_PC++; break; //Calculate the T address 
+    case  0x8684: PLC_Hs(RAM_C_ADDR     + (( temp2 + Transfer) << 1) ) = (u16)value; PLC_PC++; break; //Calculate the C address
+    case  0x8686: PLC_Hs(RAM_D0000_ADDR + (( temp2 + Transfer) << 1) ) = (u16)value; PLC_PC++; break; //Calculate the D address 
+    case  0x8688: PLC_Hs(RAM_D1000_ADDR + (( temp2 + Transfer) << 1) ) = (u16)value; PLC_PC++; break; //D1000 and above
     /************************************************K1M0 register: V indexing*******************************************************************/
     case  0x9482: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0 with V0-V3 indexing  
     case  0x9483: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0 with V4-V7 indexing  
@@ -1023,11 +1027,11 @@ u32 type_of, temp1, temp2, temp3, temp4;
     case 0x848E: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
     case 0x8490: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0     
     
-    case 0x8680: PLC_Ws(RAM_D8000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the D address D8000
-    case 0x8682: PLC_Ws(RAM_T_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the T address 
-    case 0x8684: PLC_Ws(RAM_C_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the C address
-    case 0x8686: PLC_Ws(RAM_D0000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the D address 
-    case 0x8688: PLC_Ws(RAM_D1000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //D1000 and above
+    case 0x8680: PLC_Ws(RAM_D8000_ADDR + (( temp2 + Transfer ) << 1) ) = value, PLC_PC++; break; //Calculate the D address D8000
+    case 0x8682: PLC_Ws(RAM_T_ADDR     + (( temp2 + Transfer ) << 1) ) = value, PLC_PC++; break; //Calculate the T address 
+    case 0x8684: PLC_Ws(RAM_C_ADDR     + (( temp2 + Transfer ) << 1) ) = value, PLC_PC++; break; //Calculate the C address
+    case 0x8686: PLC_Ws(RAM_D0000_ADDR + (( temp2 + Transfer ) << 1) ) = value, PLC_PC++; break; //Calculate the D address 
+    case 0x8688: PLC_Ws(RAM_D1000_ADDR + (( temp2 + Transfer ) << 1) ) = value, PLC_PC++; break; //D1000 and above
     /************************************************K1M0 register: Z indexing*******************************************************************/
     case 0xA482: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0 with V0-V3 indexing  
     case 0xA483: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0 with V4-V7 indexing  
@@ -1090,11 +1094,11 @@ float_union tempF;
 
   if      (type_of == 0x8080) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //Calculate the K value
   else if (type_of == 0x8280) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //Calculate the H value            
-  else if (type_of == 0x8680) {tempF.data = PLC_Wf(RAM_D8000_ADDR + temp1 << 1);} //Calculate the D address D8000
-  else if (type_of == 0x8682) {tempF.data = PLC_Wf(RAM_T_ADDR     + temp1 << 1);} //Calculate the T address 
-  else if (type_of == 0x8684) {tempF.data = PLC_Wf(RAM_C_ADDR     + temp1 << 1);} //Calculate the C address
-  else if (type_of == 0x8686) {tempF.data = PLC_Wf(RAM_D0000_ADDR + temp1 << 1);} //Calculate the D address 
-  else if (type_of == 0x8688) {tempF.data = PLC_Wf(RAM_D1000_ADDR + temp1 << 1);} //D1000 and above
+  else if (type_of == 0x8680) {tempF.data = PLC_Wf(RAM_D8000_ADDR + (temp1 << 1));} //Calculate the D address D8000
+  else if (type_of == 0x8682) {tempF.data = PLC_Wf(RAM_T_ADDR     + (temp1 << 1));} //Calculate the T address 
+  else if (type_of == 0x8684) {tempF.data = PLC_Wf(RAM_C_ADDR     + (temp1 << 1));} //Calculate the C address
+  else if (type_of == 0x8686) {tempF.data = PLC_Wf(RAM_D0000_ADDR + (temp1 << 1));} //Calculate the D address 
+  else if (type_of == 0x8688) {tempF.data = PLC_Wf(RAM_D1000_ADDR + (temp1 << 1));} //D1000 and above
   return tempF.data;
 }
 
@@ -1207,7 +1211,7 @@ u32 C;
           tempV += (*PLC_PC & 0x00FF) << 16;
           PLC_PC++;
           tempV += (*PLC_PC & 0x00FF) << 24;
-          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
+          C = RAM_ADDR + Addr_CHVal + ((temp - 200) << 2); 
           if ( PLC_Ws(C) < tempV ) {            //Compare the current counter value with the target value
             if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
               PLC_Ws(C) += 1;
@@ -1238,7 +1242,7 @@ u32 C;
           tempV += (*PLC_PC & 0x00FF) << 16;
           PLC_PC++;
           tempV += (*PLC_PC & 0x00FF) << 24;
-          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
+          C = RAM_ADDR + Addr_CHVal + ((temp - 200) << 2); 
           if ( PLC_Ws(C) < tempV )              //Compare the current counter value with the target value
             PLC_BIT_OFF(AddrB_CO * 8 + temp);     
           else
@@ -1266,7 +1270,7 @@ u32 C;
         tempV = PLC_16BIT(Addr_D0000 + tempV * 2);
         if ( temp >= 200 ) {              //Check whether this is a counter register numbered C200 or higher
           tempV += PLC_16BIT(Addr_D0000 + tempV * 2 + 2) << 16;
-          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
+          C = RAM_ADDR + Addr_CHVal + ((temp - 200) << 2); 
           if ( PLC_Ws(C) < tempV ) {     //Compare the current counter value with the target value
             if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
               PLC_Ws(C) += 1;
@@ -1293,7 +1297,7 @@ u32 C;
         tempV = PLC_16BIT(Addr_D0000 + tempV * 2);
         if ( temp >= 200 ) {              //Check whether this is a counter register numbered C200 or higher
           tempV += PLC_16BIT(Addr_D0000 + tempV * 2 + 2) << 16;
-          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2;
+          C = RAM_ADDR + Addr_CHVal + ((temp - 200) << 2);
           if ( PLC_Ws(C) < tempV )      //Compare the overflow value
             PLC_BIT_OFF(AddrB_CO * 8 + temp);
           else

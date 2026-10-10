@@ -60,7 +60,7 @@ Example: D8120 = 0X4096 sets the communication baud rate to 19200
 #ifndef _PLC_IO_H 
 #define _PLC_IO_H 
 
-#include "stm32f10x.h"              //0X4221018C
+#include "platform.h"              //0X4221018C
 
 #ifdef __cplusplus
 extern "C"  {

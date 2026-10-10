@@ -1,7 +1,7 @@
 #ifndef _MAIN_H_
 #define _MAIN_H_
 
-#include "stm32f10x.h"
+#include "platform.h"
 #include "plc_io.h"
 
 void InitALL(void);

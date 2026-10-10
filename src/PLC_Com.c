@@ -1,6 +1,6 @@
 /********************************************************/
-// CPU needs: STM32F103--RAM memory is not less than 64K Flash memory is not less than 128K
-// This code has been tested in STM32F103RDT6, VET6
+// Register-only port targets STM32F103C8 BluePill (20 KB RAM, 64 KB Flash).
+// The original implementation was tested on STM32F103RDT6 and VET6.
 // Edit date: 20150909
 // editor by Xiao Xiaoying
 // Online shop: shop182385147.taobao.com
@@ -74,18 +74,26 @@ B15        | Protocol    |
 Example: D8120 = 0X4096 Communication baud rate is 19200
 *********************************************************************************/
 
-#include "stm32f10x.h"
-#include "stm32f10x_flash.h"
+#include "platform.h"
+#include "plc_flash.h"
+#include "plc_memory.h"
+#include "board_clock.h"
+
 #include <stdio.h>
 #include "PLC_Dialogue.h"
 #include "plc_io.h"
 #include "PLC_CONF.H"
 
 extern u32 PLC_BIT_TEST(u32 addr);
-extern void PLC_BIT_ON(u16 addr);
-extern void PLC_BIT_OFF(u16 addr);
+extern void PLC_BIT_ON(u32 addr);
+extern void PLC_BIT_OFF(u32 addr);
 
-const u8 PLC_ROM[110] @ (ROM_ADDR) = {
+#ifdef __ICCARM__
+#pragma location=".plc_rom"
+__root const u8 PLC_ROM[110] = {
+#else
+const u8 PLC_ROM[110] __attribute__((section(".plc_rom"), used)) = {
+#endif
 // The starting address of FLASH is PLC information **************************
 // The first 0X02 indicates that the PLC is //16K steps, password area and difference area.
 MAXSTEP / 1000,0x00, // 00 0x0000 -- SIZE IN STEP 16000
@@ -287,27 +295,29 @@ MAXSTEP / 1000, // D8102 - 16000 Steps
 };
 
 const char ASCII[16] = {0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0X41, 0X42, 0X43, 0X44, 0X45, 0X46};
-const char HEX[]={
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,
-0,10,11,12,13,14,15,0,0,0,0,0,0,};
+static int hex_digit(u8 c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
 
 extern u8  PLC_NEW_PROG;
 
 static u16 prog_write_buffer[1024];
 
-static u16 rx_count, tx_count;
+static u16 rx_count;
+static volatile u16 tx_count;
 char tx_data[144];
 char rx_data[144];
 static u32 addr;
 
 static u16 prog_address, data_address;
 
-static u8 UART_Sended = 1;
+static volatile u8 UART_Sended = 1;
+static volatile u8 staging_busy;
 static u8 data_size, bctrl0, bctrl1;
-u8  UART_SEND_READY;
+volatile u8 UART_SEND_READY;
 u8  PLC_UPDATE_PROG = 0;
 
 void PLC_DATA_INIT(void) {
@@ -322,36 +332,60 @@ u32 temp;
   bctrl1 = 255;
 }
 
-void write_block(u32 number) {
-u32 temp, temp1;
-
-  if ( number < (MAXSTEP / 1000 + 1) ) {
-    FLASH_Unlock();
-    temp1 = number << 11;
-    FLASH_ErasePage(ROM_ADDR + temp1);
-    for ( temp = 0; temp < 1024; temp++ )
-      FLASH_ProgramHalfWord(ROM_ADDR + temp1 + temp * 2, prog_write_buffer[temp]);
-    FLASH_Lock();
+static bool block_address(u32 number, u32 *address) {
+  if (number == 10U) { /* Legacy retention block identifier, not a Flash offset. */
+    *address = PLC_RETAIN_BASE;
+    return true;
   }
+  if (number >= PLC_PROGRAM_BLOCKS) return false;
+  *address = ROM_ADDR + number * PLC_FLASH_BLOCK_SIZE;
+  return true;
 }
 
-void backup_block(u32 number) {
-u32 temp, temp1;
+bool write_block(u32 number) {
+  u32 address;
+  return block_address(number, &address) &&
+         plc_flash_write_block(address, prog_write_buffer);
+}
 
-  temp1 = number << 11;
-  if ( number < (MAXSTEP / 1000 + 1) ) {
-    for ( temp = 0; temp < 1024; temp++ ) {
-      prog_write_buffer[temp] = PLC_ROM_16BIT(temp1 + temp * 2);
-    }
+bool backup_block(u32 number) {
+  u32 address, i;
+  if (!block_address(number, &address)) return false;
+  for (i = 0; i < PLC_FLASH_BLOCK_SIZE / 2U; i++)
+    prog_write_buffer[i] = *(volatile const u16 *)(address + i * 2U);
+  return true;
+}
+
+/* Retention and program downloads share one staging buffer. Never replace a
+ * dirty program block with retention data (including on a failed flush). */
+static bool flush_program(void) {
+  if (bctrl1 != 255U && !write_block(bctrl1)) return false;
+  bctrl0 = bctrl1 = 255U;
+  return true;
+}
+
+static u16 retained_crc(void) {
+  u32 i, bit;
+  u16 crc = 0xFFFFU;
+  const u8 *bytes = (const u8 *)prog_write_buffer;
+  for (i = 0; i < 1022U * 2U; i++) {
+    crc ^= bytes[i];
+    for (bit = 0; bit < 8U; bit++)
+      crc = (crc & 1U) ? (crc >> 1) ^ 0xA001U : crc >> 1;
   }
+  return crc;
 }
 
 /***********************************************
   Function: Back up data on power-off
 ***********************************************/
 void PLC_DATA_KEEP(void) {  
-u32 temp = 0, temp_addr; 
+u32 temp = 0, temp_addr;
 
+  staging_busy = 1;
+  if (!flush_program()) { PLC_BIT_ON(M8063); staging_busy = 0; return; }
+  for (temp = 0; temp < 1024U; temp++) prog_write_buffer[temp] = 0xFFFFU;
+  temp = 0;
   for ( temp_addr = Addr_D0000 + 1000; temp_addr < Addr_D0000 + 1900; temp_addr +=2 ) // Back up 400 D registers starting at D500
     prog_write_buffer[temp] = PLC_16BIT(temp_addr), temp++;
 
@@ -364,7 +398,10 @@ u32 temp = 0, temp_addr;
   for ( temp_addr = 0x0040; temp_addr < 0x0080; temp_addr +=2 )      // Back up M512-M1023
     prog_write_buffer[temp] = PLC_16BIT(temp_addr), temp++;
 
-  write_block(10);
+  prog_write_buffer[1022] = retained_crc();
+  prog_write_buffer[1023] = 0xA55AU; /* Written last; interrupted updates stay invalid. */
+  if (!write_block(10)) PLC_BIT_ON(M8063);
+  staging_busy = 0;
 }
 
 /***********************************************
@@ -373,7 +410,10 @@ u32 temp = 0, temp_addr;
 void PLC_DATA_RECOVER(void) { 
 u32 temp = 0, temp_addr;
 
-  backup_block(10);
+  staging_busy = 1;
+  if (!flush_program()) { PLC_BIT_ON(M8063); staging_busy = 0; return; }
+  if (!backup_block(10) || prog_write_buffer[1023] != 0xA55AU ||
+      prog_write_buffer[1022] != retained_crc()) { staging_busy = 0; return; }
 
   for ( temp_addr = Addr_D0000 + 1000; temp_addr < Addr_D0000 + 1900; temp_addr +=2 )
     PLC_16BIT(temp_addr) = prog_write_buffer[temp], temp++;
@@ -386,6 +426,7 @@ u32 temp = 0, temp_addr;
 
   for ( temp_addr = 0x0040; temp_addr < 0x0080; temp_addr +=2 )
     PLC_16BIT(temp_addr) = prog_write_buffer[temp], temp++;
+  staging_busy = 0;
 }
 
 /*******************************************************************************
@@ -406,24 +447,24 @@ static u16 find_data(u32 addr,u32 find_data) {
 u8 find_ok;
 
   find_ok = 5;
-  addr -= 0x8000;
+  if (addr < 0x8000U) return 0xFFFFU;
+  addr -= 0x8000U;
+  if (addr >= PLC_PROGRAM_BLOCKS * PLC_FLASH_BLOCK_SIZE || (addr & 1U)) return 0xFFFFU;
   do {
     if ( ( PLC_ROM_16BIT(addr) == find_data ) )
       find_ok = 0;
     else
       addr += 2;
-    if ( addr > 0x7FFF )
+    if ( addr > PLC_PROGRAM_BLOCKS * PLC_FLASH_BLOCK_SIZE - 2U )
       find_ok = 1;
   } while ( find_ok > 3 );
   addr += 0X8000;
   return addr;
 }
 
-void find_data_address(void) {
-u32 temp_sum,data_H,data_L;                                    
+static void find_data_address(u8 data_L, u8 data_H) {
+u32 temp_sum;                                    
 
-  data_L = tx_data[5];
-  data_H = tx_data[6];
   data_address = find_data(prog_address, (data_H << 8) + data_L);
   tx_data[0] = 0x02;
   temp_sum = 0x31;
@@ -440,7 +481,7 @@ u32 temp_sum,data_H,data_L;
   temp_sum += tx_data[4];
   temp_sum += tx_data[5];
   temp_sum += tx_data[6];
-  tx_data[7] = ASCII[temp_sum >> 4];
+  tx_data[7] = ASCII[(temp_sum & 0xFFU) >> 4];
   tx_data[8] = ASCII[temp_sum & 0x0F]; 
   tx_count = 9;
 }
@@ -453,6 +494,13 @@ u32 temp;
 u8 temp_sum;
 u32 data;
 
+  if (data_size > (sizeof(tx_data) - 4U) / 2U ||
+      !((addr >= RAM_ADDR && plc_ram_range(addr - RAM_ADDR, data_size)) ||
+        (addr >= ROM_ADDR && addr <= PLC_RETAIN_BASE && data_size <= PLC_RETAIN_BASE - addr))) {
+    tx_data[0] = 0x15;
+    tx_count = 1;
+    return;
+  }
   tx_data[0] = 0x02;
   temp_sum = 0;
   for ( temp = 0; temp < data_size; temp++ ) { 
@@ -468,21 +516,101 @@ u32 data;
   tx_count = temp * 2 + 4;
 }
 
-void Process_switch(void) {                                                                                                                      
-u32 temp;
+/* Monitor words are byte addresses; monitor bits are bit addresses. Pack the
+ * result as aligned words followed by aligned groups of 16 bits. Validate the
+ * entire descriptor list before changing any output. */
+static bool build_monitor(void) {
+  u32 words = PLC_8BIT(0x1400), bits = PLC_8BIT(0x1402);
+  u32 i, source, output_words = 0, offset;
+  if ((words + bits) * 2U > 0x1790U - 0x1404U) return false;
+  for (i = 0; i < words; i++) {
+    source = PLC_16BIT(0x1404 + i * 2U);
+    if ((source & 1U) || !plc_ram_range(source, 2U)) return false;
+    output_words++;
+    if (source >= Addr_CHVal && source < Addr_CHVal + 56U * 4U) {
+      if (!plc_ram_range(source, 4U)) return false;
+      output_words++;
+    }
+  }
+  for (i = 0; i < bits; i++) {
+    source = PLC_16BIT(0x1404 + (words + i) * 2U);
+    if (source >= PLC_RAM_SIZE * 8U) return false;
+  }
+  /* Monitoring workspace ends at 0x1800, before the user data area. */
+  if ((output_words + (bits + 15U) / 16U) * 2U > 0x1800U - 0x1790U) return false;
+  offset = 0x1790U;
+  for (i = 0; i < words; i++) {
+    source = PLC_16BIT(0x1404 + i * 2U);
+    PLC_16BIT(offset) = PLC_16BIT(source);
+    offset += 2U;
+    if (source >= Addr_CHVal && source < Addr_CHVal + 56U * 4U) {
+      PLC_16BIT(offset) = PLC_16BIT(source + 2U);
+      offset += 2U;
+    }
+  }
+  for (i = 0; i < (bits + 15U) / 16U; i++)
+    PLC_16BIT(offset + i * 2U) = 0;
+  for (i = 0; i < bits; i++) {
+    source = PLC_16BIT(0x1404 + (words + i) * 2U);
+    if (PLC_8BIT((source >> 3)) & (1U << (source & 7U)))
+      PLC_16BIT(offset + (i >> 4) * 2U) |= 1U << (i & 15U);
+  }
+  return true;
+}
 
-u8 data;
+void Process_switch(void) {
+u32 temp, decoded_count;
+u8 payload[sizeof(rx_data) / 2U];
 
-  for ( temp = 4; temp < (rx_count - 2); temp++ ) {
-    tx_data[temp / 2]  = HEX[rx_data[temp]] * 0x10 + HEX[rx_data[temp + 1]];
-    temp++;
+  /* rx_count is the LAST INDEX: STX at 2, command at 3, ETX at
+   * rx_count-2. The special E7/E8 form has FIVE hex digits, not pairs. */
+  if (!UART_Sended || UART_SEND_READY || staging_busy) { rx_count = 0; return; }
+  if (rx_count < 6U || rx_count >= sizeof(rx_data) ||
+      rx_data[rx_count - 2U] != 0x03) goto reject;
+  if (rx_data[3] == 'E' && rx_count == 11U &&
+      (rx_data[4] == '7' || rx_data[4] == '8')) {
+    int digits[4];
+    for (temp = 0; temp < 4U; temp++) {
+      digits[temp] = hex_digit((u8)rx_data[5U + temp]);
+      if (digits[temp] < 0) goto reject;
+    }
+    prog_address = (digits[0] << 4) | digits[1] |
+                   (digits[2] << 12) | (digits[3] << 8);
+    if (!plc_ram_range(prog_address >> 3, 1U)) goto reject;
+    if (rx_data[4] == '8') PLC_BIT_OFF(prog_address);
+    else switch (prog_address) {
+      case 0x0E23: break;
+      case 0x0E24: PLC_8BIT(Addr_M8) = 0x09; PLC_UPDATE_PROG = 0; break;
+      case 0x0E25: PLC_8BIT(Addr_M8) = 0x0A; break;
+      default: PLC_8BIT(Addr_M8) = 0x09; PLC_BIT_ON(prog_address); break;
+    }
+    tx_data[0] = 0x06;
+    tx_count = 1;
+    goto finish;
+  }
+  if ((rx_count - 6U) & 1U) goto reject;
+  decoded_count = (rx_count - 6U) / 2U;
+  for (temp = 0; temp < decoded_count; temp++) {
+    u32 index = 4U + temp * 2U;
+    int hi = hex_digit((u8)rx_data[index]);
+    int lo = hex_digit((u8)rx_data[index + 1U]);
+    if (hi < 0 || lo < 0) goto reject;
+    payload[temp] = (u8)((hi << 4) | lo);
+  }
+
+  switch (rx_data[3]) {
+    case '0': case '1': if (decoded_count < 3U) goto reject; break;
+    case '7': case '8': if (decoded_count < 2U) goto reject; break;
+    case '4': case 'B': break;
+    case 'E': if (decoded_count < 1U) goto reject; break;
+    default: goto reject;
   }
 
   tx_data[0] = 0x06;
   tx_count = 1;
 
-  prog_address = (tx_data[2] << 8) + tx_data[3];
-  data_size = tx_data[4];
+  prog_address = decoded_count >= 2U ? ((u32)payload[0] << 8) | payload[1] : 0U;
+  data_size = decoded_count >= 3U ? payload[2] : 0U;
 
   switch (rx_data[3]) { 
     case 0x30: 
@@ -491,9 +619,10 @@ u8 data;
 
       break;
 
-    case 0x31: 
+    case 0x31:
+      if (!plc_ram_range(prog_address, data_size) || decoded_count < 3U + data_size) goto reject;
       for ( temp = 0; temp < data_size; temp++ ) {
-        PLC_8BIT(temp + prog_address) = tx_data[5 + temp];
+        PLC_8BIT(temp + prog_address) = payload[3 + temp];
       }
       break;
 
@@ -505,73 +634,36 @@ u8 data;
         tx_data[0]=0x06, tx_count=1; 
       break;
 
-    case 0x37: 
+    case 0x37:
+      if (!plc_ram_range(prog_address >> 3, 1U)) goto reject;
       PLC_BIT_ON(prog_address);
       break;
 
-    case 0x38: 
+    case 0x38:
+      if (!plc_ram_range(prog_address >> 3, 1U)) goto reject;
       PLC_BIT_OFF(prog_address);
       break;
 
     case 0x42: 
-      write_block(bctrl1);
-      bctrl1 = 255;
-      bctrl0 = 255;
+      if (!flush_program()) goto reject;
       break;
 
     case 0x45: // -- Exx -- PC_OPTION_PROG
-      data_size = tx_data[5];
-      if ( ( rx_count == 11 ) && ( ( rx_data[4] == 0x37 ) || ( rx_data[4] == 0x38 ) ) ) {
-        prog_address = (HEX[rx_data[5]] << 4) + HEX[rx_data[6]] + (HEX[rx_data[7]] << 12) + (HEX[rx_data[8]] << 8);
-        if ( rx_data[4] == 0x37 ) {
-// -- E7 -- EPC_FORCE_ON
-          switch(prog_address) {
-            case 0x0E23: break;
-            case 0x0E24: PLC_8BIT(Addr_M8) = 0x09; PLC_UPDATE_PROG = 0; break;
-            case 0x0E25: PLC_8BIT(Addr_M8) = 0x0A; break;
-            default:     PLC_8BIT(Addr_M8) = 0x09; PLC_BIT_ON(prog_address); break;
-          }
-        } else {
-// -- E8 -- EPC_FORCE_OFF
-          PLC_BIT_OFF(prog_address);
-        }
-      } else {
-        prog_address = (tx_data[3] << 8) + tx_data[4];
-        switch (tx_data[2]) { 
+      switch (payload[0]) {
+        case 0x00: case 0x01: case 0x10: case 0x11:
+          if (decoded_count < 4U) goto reject;
+          break;
+        case 0x41: if (decoded_count < 5U) goto reject; break;
+        case 0x42: case 0x60: case 0x61: case 0x62: case 0x63: case 0x64: break;
+        default: goto reject;
+      }
+      data_size = decoded_count >= 4U ? payload[3] : 0U;
+      prog_address = decoded_count >= 3U ? ((u32)payload[1] << 8) | payload[2] : 0U;
+      {
+        switch (payload[0]) {
           case 0x00: {
 // -- E00 -- PC_READ_Parameter
-            u32 temp_bit,temp_addr,mov_bit,temp1;
-            u32  monitor,monitor1,monitor2; 
-
-            if ( ( prog_address == 0x1790 ) || ( prog_address == 0x17D0 ) ) {          //Request to read monitoring data at addresses 0X1790 and 0X17D0
-              if ( prog_address == 0x1790 ) {
-                monitor1 = PLC_8BIT(0x1400);                              //Read the number of words to monitor 0X1400/2=0XA00
-                for ( temp1 = monitor = 0; monitor < monitor1; monitor++ ) {       //Read monitored word data
-//                  temp_bit = PLC_Comm_Byte(PLC_16BIT[0XA02 + monitor]) / 2;
-                  temp_bit = PLC_16BIT(0x1404 + monitor * 2);
-                  PLC_16BIT(0x1790 + temp1 * 2) = PLC_16BIT(temp_bit);  //Copy the required data to the buffer 0X1790/2=0XBC8
-                  temp1++;
-                  if ( ( temp_bit >= Addr_CHVal ) && ( temp_bit < Addr_CHVal + 56 * 2 ) ) {           //In particular, addresses for C200-C255 hold 32-bit values 
-                    PLC_16BIT(0x1790 + temp1 * 2) = PLC_16BIT(temp_bit + 2);     //Copy the required data to the buffer
-                    temp1++;
-                  }                      
-                }
-                monitor2 = PLC_8BIT(0x1402);                            //Read the number of bits to monitor
-                for ( monitor1 = 0; monitor1 < monitor2; monitor1++ ) {         //Read monitored bit data
-//                  temp_addr = PLC_Com_BIT(PLC_16BIT[0XA02 + monitor + monitor1]);
-                  temp_addr = PLC_16BIT(0x1404 + (monitor + monitor1) * 2);
-//                  temp_bit = PLC_16BIT[temp_addr / 0x10];
-                  temp_bit = PLC_16BIT(temp_addr >> 4);
-                  mov_bit = temp_addr & 0x0F;
-                  if ( ( temp_bit & (1<<mov_bit) ) == ( 1 << mov_bit) )
-
-                    PLC_16BIT(0x1790 + temp1 + (monitor1 >> 4)) |= 1 << (monitor1 & 0x0F);//Serial-port buffer data
-                  else
-
-                    PLC_16BIT(0x1790 + temp1 + (monitor1 >> 4)) &= ~(1 << (monitor1 & 0x0F));
-                }
-              }
-            }
+            if (prog_address == 0x1790U && !build_monitor()) goto reject;
 
             if ( prog_address > 0x3FFF ) // D0000
               prog_address -= 0x2000;
@@ -582,48 +674,60 @@ u8 data;
           }
           case 0x10:
 // -- E10 -- PC_WRITE_Parameter
+            if (decoded_count < 4U + data_size) goto reject;
             if ( prog_address < 0x8000 ) { // 0xE420 - Comments
 
               if ( prog_address > 0x3FFF )
                 prog_address -= 0x2000;
 
+              if (!plc_ram_range(prog_address, data_size) || decoded_count < 4U + data_size) goto reject;
               for ( temp = 0; temp < data_size; temp++)
-                PLC_8BIT(prog_address + temp) = tx_data[6 + temp];
+                PLC_8BIT(prog_address + temp) = payload[4 + temp];
             }
             break;
 
           case 0x01:
 // -- E01 -- PC_READ_PROG
+            if (prog_address >= 0x8000U) prog_address -= 0x8000U;
+            if (prog_address >= PLC_PROGRAM_BLOCKS * PLC_FLASH_BLOCK_SIZE) goto reject;
             addr = ROM_ADDR + prog_address;
             UARTSend();
             break;
 
           case 0x11:
 // -- E11 -- PC_WRITE_PROG
-            PLC_8BIT(Addr_M8) = 0x0A; 
-            PLC_UPDATE_PROG = 1; // Prevent the program from running during the download process.
-            if ( prog_address > 0x7fff ) {
+            if (decoded_count < 4U + data_size) goto reject;
+            if (prog_address >= 0x8000U) {
+              prog_address -= 0x8000U;
+              if ((prog_address & 1U) || (data_size & 1U) ||
+                  prog_address >= PLC_PROGRAM_BLOCKS * PLC_FLASH_BLOCK_SIZE ||
+                  data_size > PLC_PROGRAM_BLOCKS * PLC_FLASH_BLOCK_SIZE - prog_address) goto reject;
+              PLC_8BIT(Addr_M8) = 0x0A;
+              PLC_UPDATE_PROG = 1;
               PLC_NEW_PROG = 1;
-              prog_address -= 0x8000;
-              data = 0;
-              for ( temp = 0; temp < data_size; temp += 2 ) {
-                bctrl0 = (prog_address + temp) >> 11; // / 0x800;
-                if ( bctrl0 != bctrl1 ) {
-                  write_block(bctrl1);   
-                  backup_block(bctrl0);  
+              for (temp = 0; temp < data_size; temp += 2U) {
+                u32 offset = prog_address + temp;
+                bctrl0 = offset / PLC_FLASH_BLOCK_SIZE;
+                if (bctrl0 != bctrl1) {
+                  if (bctrl1 != 255U && !write_block(bctrl1)) goto reject;
+                  if (!backup_block(bctrl0)) goto reject;
                   bctrl1 = bctrl0;
                 }
-                prog_write_buffer[(prog_address + data) - (bctrl0 << 1)] = tx_data[6 + temp] + ( tx_data[7 + temp] << 8);
-                data++;
+                prog_write_buffer[(offset % PLC_FLASH_BLOCK_SIZE) / 2U] =
+                  payload[4 + temp] | ((u16)payload[5 + temp] << 8);
               }
             } else {
-              for ( temp = 0; temp < data_size; temp++ ) {
-                PLC_8BIT(temp + prog_address) = tx_data[6 + temp];
-              }
-            } 
+              if (!plc_ram_range(prog_address, data_size)) goto reject;
+              PLC_8BIT(Addr_M8) = 0x0A;
+              PLC_UPDATE_PROG = 1;
+              for (temp = 0; temp < data_size; temp++)
+                PLC_8BIT(temp + prog_address) = payload[4 + temp];
+            }
             break;
 
-          case 0x41: find_data_address(); break;
+          case 0x41: find_data_address(payload[3], payload[4]); break;
+
+          case 0x42: if (!flush_program()) goto reject; break;
 
           case 0x61: 
             bctrl1 = 255;
@@ -632,21 +736,21 @@ u8 data;
 
           case 0x60:
 // -- E60 -- Clear flash
-            backup_block(0);
+            /* Clearing explicitly discards the pending download. */
+            bctrl0 = bctrl1 = 255U;
+            if (!backup_block(0)) goto reject;
             prog_write_buffer[46] = 0x000F;  // 0x5C
             for ( temp = 47; temp < 1024; temp++ )
               prog_write_buffer[temp] = 0xFFFF;
-            FLASH_Unlock();
-            FLASH_ErasePage(ROM_ADDR);
-            write_block(0);
-            for ( temp = 1; temp < 10; temp++ )
-              FLASH_ErasePage(ROM_ADDR + (temp << 11));
-            FLASH_Lock();
+            if (!write_block(0)) goto reject;
+            for (temp = 1; temp < PLC_PROGRAM_BLOCKS; temp++)
+              if (!plc_flash_erase_block(ROM_ADDR + temp * PLC_FLASH_BLOCK_SIZE)) goto reject;
+            bctrl0 = bctrl1 = 255U;
             break;
 
           case 0x62:
 // -- E62 -- Clear M0000 - M3071
-            for ( temp = Addr_ML; temp < Addr_ML + 3072 / 16; temp += 2 )
+            for ( temp = Addr_ML; temp < Addr_ML + 3072 / 8; temp += 2 )
               PLC_16BIT(temp) = 0x00;
             break;
 
@@ -677,40 +781,41 @@ u8 data;
       tx_count = 1;           
       break;
   }                                                                                                                        
+  goto finish;
+reject:
+  tx_data[0] = 0x15;
+  tx_count = 1;
+finish:
   rx_count = 0;
   UART_SEND_READY = 1;
 }                 
 
-void usart(u16 DEFAULT_BAUD) {
-/*
-  USART_InitTypeDef USART_InitStructure;
-  USART_InitStructure.USART_BaudRate            = DEFAULT_BAUD;
-  USART_InitStructure.USART_WordLength          = USART_WordLength_8b;
-  USART_InitStructure.USART_StopBits            = USART_StopBits_1;
-  USART_InitStructure.USART_Parity              = USART_Parity_No;
-  USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-  USART_InitStructure.USART_Mode                = USART_Mode_Tx | USART_Mode_Rx;
-  USART_Init(USART1,&USART_InitStructure);
-*/
-  USART1->BRR = SystemCoreClock/DEFAULT_BAUD;
+void usart(u16 baud) {
+  if (baud == 0U) return;
+  USART1->BRR = (board_apb2_hz() + baud / 2U) / baud;
   USART1->CR1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_UE | USART_CR1_RXNEIE;
-
-}  
+}
 
 //---------------------Serial-port configuration---------------------
 void DMA1_Channel4_IRQHandler(void) {
-//  if (DMA1->ISR & DMA_ISR_TCIF4) {    //Check the transfer-complete flag
-    DMA1->IFCR |= DMA1_FLAG_TC4;
-    DMA1_Channel4->CCR &= 0xFFFE;
+  u32 status = DMA1->ISR;
+  if (status & (DMA_ISR_TCIF4 | DMA_ISR_TEIF4)) {
+    DMA1_Channel4->CCR &= ~DMA_CCR_EN;
+    DMA1->IFCR = DMA_IFCR_CGIF4; /* Write-one-to-clear, never read/modify IFCR. */
+    tx_count = 0;
     UART_Sended = 1;
-
+    if (status & DMA_ISR_TEIF4) PLC_BIT_ON(M8063);
+  }
 }
 
 void TX_Process(void) {
-  if ( UART_Sended ) {
+  if (UART_Sended && tx_count > 0U && tx_count <= sizeof(tx_data)) {
     UART_SEND_READY = UART_Sended = 0;
+    DMA1_Channel4->CCR &= ~DMA_CCR_EN;
+    DMA1->IFCR = DMA_IFCR_CGIF4;
     DMA1_Channel4->CNDTR = tx_count;
-    DMA1_Channel4->CCR |= 0x0001;
+    __DMB();
+    DMA1_Channel4->CCR |= DMA_CCR_EN;
   }
 }
 
@@ -718,7 +823,12 @@ void RX_Process(void) {
 static u32 sum, f = 1;
 u32 temp;
 
-  rx_data[0] = 0x7F & USART1->DR;
+  /* Always consume DR, even while dropping input. The DMA source must stay
+   * immutable until completion; a response waiting for main also owns it.
+   * Busy input is dropped, not queued. A new STX is required afterwards. */
+  temp = 0x7FU & USART1->DR;
+  if (!UART_Sended || UART_SEND_READY || staging_busy) { rx_count = 0; return; }
+  rx_data[0] = (char)temp;
 
   if ( rx_data[0] == 0X05 ) {
     goto send_ok;
@@ -753,19 +863,24 @@ send_ok:
   }
 
   if ( rx_count > 0 ) {
-    rx_count++; 
-    rx_data[rx_count] = rx_data[0];
-    if ( rx_count > 144 ) {
-      tx_count = 0;
+    if (rx_count >= sizeof(rx_data) - 1U) {
       rx_count = 0;
+      tx_data[0] = 0x15;
+      tx_count = 1;
+      UART_SEND_READY = 1;
+      return;
     }
+    rx_count++;
+    rx_data[rx_count] = rx_data[0];
     if ( ( rx_count > 3 ) && ( rx_data[rx_count - 2] == 0x03 ) ) {
       sum = 0;
-      for ( temp = 3; temp < (rx_count - 1); temp++ )
+      for ( temp = 3; temp < (rx_count - 1U); temp++ )
         sum += rx_data[temp];
 
-      temp = (HEX[rx_data[rx_count - 1]] << 4) + HEX[rx_data[rx_count]];
-      if ( ( sum & 0xFF ) == temp ) {
+      int hi = hex_digit((u8)rx_data[rx_count - 1]);
+      int lo = hex_digit((u8)rx_data[rx_count]);
+      temp = hi >= 0 && lo >= 0 ? ((u32)hi << 4) | (u32)lo : 256U;
+      if (hi >= 0 && lo >= 0 && (sum & 0xFFU) == temp) {
         Process_switch(); 
 
       } else {
@@ -778,21 +893,12 @@ send_ok:
   }     
 }
 
-void USART1_IRQHandler(void) {                      
-
-  if ( (USART1->SR & USART_SR_RXNE) != 0 ) {
-    USART1->SR &= ~USART_SR_RXNE;
-    RX_Process();
-  }
-  if ( (USART1->SR & USART_SR_ORE) != 0 ) {
-    USART1->SR &= ~USART_SR_ORE;
-    USART1->DR;
-  }
-  if ( (USART1->SR & USART_SR_TXE) != 0 ) {
-    USART1->SR &= ~USART_SR_TXE;
-    USART1->CR1 &= ~USART_CR1_TXEIE;
-  }
-  if ( (USART1->SR & USART_SR_TC) != 0 ) {
-    USART1->SR &= ~USART_SR_TC;
+void USART1_IRQHandler(void) {
+  u32 status = USART1->SR;
+  if (status & (USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE)) {
+    (void)USART1->DR;
+    rx_count = 0; /* A damaged byte cannot participate in a valid packet. */
+  } else if (status & USART_SR_RXNE) {
+    RX_Process(); /* Read DR after SR: also clears receive error flags. */
   }
 }

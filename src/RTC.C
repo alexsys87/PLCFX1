@@ -1,11 +1,49 @@
 #include <main.h>
-#include "stm32f10x_rtc.h"
 #include "PLC_Dialogue.h"
 #include "PLC_CONF.H"
 
 extern u32 PLC_BIT_TEST(u32 addr);
 extern void PLC_BIT_ON(u32 addr);
 extern void PLC_BIT_OFF(u32 addr);
+
+/* Register-only STM32F103 RTC. The BluePill must have a working 32.768 kHz
+ * LSE crystal; an inaccurate LSI fallback is deliberately not used.
+ * These bounded polling budgets are iteration counts, not milliseconds.
+ * Allow several seconds for crystal startup at the normal 72 MHz CPU clock.
+ */
+#ifndef RTC_LSE_WAIT_LIMIT
+#define RTC_LSE_WAIT_LIMIT 72000000UL
+#endif
+#ifndef RTC_WAIT_LIMIT
+#define RTC_WAIT_LIMIT 1000000UL
+#endif
+#define RTC_BACKUP_MAGIC 0x5A5AU
+
+static u8 rtc_available;
+
+static u8 rtc_wait(volatile u32 *reg, u32 mask, u32 limit) {
+  while (limit-- != 0U) {
+    if ((*reg & mask) == mask)
+      return 1;
+  }
+  return 0;
+}
+
+static void rtc_unavailable(void) {
+  rtc_available = 0;
+  PLC_BIT_OFF(M8018);
+}
+
+static u8 rtc_clock_running(void) {
+  return (RCC->BDCR & (RCC_BDCR_LSERDY | RCC_BDCR_RTCEN |
+                      RCC_BDCR_RTCSEL)) ==
+         (RCC_BDCR_LSERDY | RCC_BDCR_RTCEN | RCC_BDCR_RTCSEL_LSE);
+}
+
+static u8 rtc_sync(void) {
+  RTC->CRL &= ~RTC_CRL_RSF;
+  return rtc_wait(&RTC->CRL, RTC_CRL_RSF, RTC_WAIT_LIMIT);
+}
 
 //=======================================================================================================
 // Function name: u8 Is_Leap_Year(u16 year)
@@ -48,7 +86,8 @@ u8 Is_Leap_Year(u16 year) {
 // Calling module: 
 // Author: Xiao Xiaosheng
 // Date: June 5, 2014
-// Notes: Based on January 1, 2010; valid years are 2011-2136
+// Notes: Based on January 1, 2016; valid years are 2016-2136.
+//        Returns 1 for an invalid date, 2 if the RTC is unavailable/times out.
 //-------------------------------------------------------------------------------------------------------
 // Modified by:
 // Date:
@@ -57,9 +96,21 @@ u8 Is_Leap_Year(u16 year) {
 u8 RTC_Set(u16 syear,u8 smon,u8 sday,u8 hour,u8 min,u8 sec) {
 u16 t;
 u32 seccount = 0;
+u32 backup_access;
+u8 days;
 
-  if ( syear < 2016 || syear > 2136 )
+  if (syear < 2016 || syear > 2136 || smon < 1 || smon > 12 ||
+      hour > 23 || min > 59 || sec > 59)
     return 1;
+  days = mon_table[smon - 1];
+  if (smon == 2 && Is_Leap_Year(syear))
+    days++;
+  if (sday < 1 || sday > days)
+    return 1;
+  if (!rtc_available || !rtc_clock_running()) {
+    rtc_unavailable();
+    return 2;
+  }
   for ( t = 2016; t < syear; t++ ) {
     if ( Is_Leap_Year(t) )
       seccount += 31622400;
@@ -77,21 +128,25 @@ u32 seccount = 0;
   seccount += (u32)min * 60;
   seccount += sec;
 
-/*  PWR->CR |= 0x08;
-//  PWR_BackupAccessCmd(ENABLE);
-  RTC_WaitForLastTask();
-  RTC_SetCounter(seccount);
-  RTC_WaitForLastTask();
-*/
+  backup_access = PWR->CR & PWR_CR_DBP;
   PWR->CR |= PWR_CR_DBP;
-  while ( (RTC->CRL & RTC_FLAG_RTOFF) == (uint16_t)RESET ) { }
+  if (!rtc_wait(&RTC->CRL, RTC_CRL_RTOFF, RTC_WAIT_LIMIT))
+    goto write_failed;
   RTC->CRL |= RTC_CRL_CNF;    //Enter configuration mode
   RTC->CNTH = seccount >> 16;   //Write the new counter-register value
-  RTC->CNTL = seccount;       //
+  RTC->CNTL = seccount & 0xFFFFU;
   RTC->CRL &= ~RTC_CRL_CNF;   //Exit configuration mode
-  while ( (RTC->CRL & RTC_FLAG_RTOFF) == (uint16_t)RESET ) { }
-  PWR->CR &= ~PWR_CR_DBP;
+  if (!rtc_wait(&RTC->CRL, RTC_CRL_RTOFF, RTC_WAIT_LIMIT))
+    goto write_failed;
+  if (!backup_access)
+    PWR->CR &= ~PWR_CR_DBP;
   return 0;
+
+write_failed:
+  if (!backup_access)
+    PWR->CR &= ~PWR_CR_DBP;
+  rtc_unavailable();
+  return 2;
 }
 /*************************************Day-of-week formula******************************************
 // (year + year/4 + year/400 - year/100 - year offset + month offset + day) / 7
@@ -126,7 +181,9 @@ Example: What day of the week was October 1, 1949?
 const u8 week_tab[] ={0,1,4,4,0,2,5,0,3,6,1,4,6};
 
 u8 RTC_Get_Week(u16 Year,u8 Month,u8 Date) {
- if ( ( Month < 3 ) && ( ( !( Year & 0x03 ) && ( Year % 1000 ) ) || ( !( Year % 400 ) ) ) )
+ if (Month < 1 || Month > 12 || Date < 1 || Date > 31)
+   return 0;
+ if (Month < 3 && Is_Leap_Year(Year))
    Date--;
  return ( Date + Year + Year/4 + Year/400 -Year/100 + week_tab[Month]-2 ) % 7;
 }
@@ -134,7 +191,7 @@ u8 RTC_Get_Week(u16 Year,u8 Month,u8 Date) {
 // Function name: u8 RTC_Get(void)
 // Description:  Convert seconds to calendar time to obtain the current time
 // Input:  Gregorian year, month, and day 
-// Output:  //Return value: 0 = success; otherwise, an error code.  
+// Output:  Updates PLC calendar registers when the RTC is available.
 // Global variables: 
 // Calling module: 
 // Author: Xiao Xiaosheng
@@ -146,42 +203,51 @@ u8 RTC_Get_Week(u16 Year,u8 Month,u8 Date) {
 // Notes: 
 //=======================================================================================================
 void RTC_Get(void) {
-static u16 daycnt=0;
-u32 timecount=0; 
-u32 temp=0;
-u16 temp1=0;
+u32 timecount, temp, high, low;
+u16 year;
+u8 month, days, attempt;
 
   if ( PLC_BIT_TEST(M8015) ) {
-    RTC_Set(D8018, D8017, D8016, D8015, D8014, D8013);
-  } else if ( PLC_BIT_TEST(M8018) ) {
-    timecount = (RTC->CNTH << 16) | RTC->CNTL ;
-//    timecount = RTC_GetCounter();
-    temp = timecount / 86400;
-    if ( daycnt != temp ) {
-      daycnt = temp;
-      temp1 = 2016;
-      while ( temp >= 365 ) {             
-        if ( Is_Leap_Year(temp1) ) {
-          if ( temp >= 366 ) temp -= 366;
-          else { temp1++; break;} 
-        } else temp -= 365;
-        temp1++; 
-      }  
-      D8018 = temp1;
-      temp1 = 0;
-      while ( temp >= 28) {
-        if ( Is_Leap_Year(D8017) && temp1 == 1 ) {
-          if ( temp >= 29) temp -= 29;
-          else break;
-        } else {
-          if ( temp >= mon_table[temp1] ) temp -= mon_table[temp1];
-          else break;
-        }
-        temp1++; 
-      }
-      D8017 = temp1 + 1;
-      D8016 = temp + 1;
+    /* Check the full PLC words before narrowing them to the public u8 API. */
+    if (D8017 >= 1 && D8017 <= 12 && D8016 >= 1 && D8016 <= 31 &&
+        D8015 <= 23 && D8014 <= 59 && D8013 <= 59)
+      RTC_Set(D8018, D8017, D8016, D8015, D8014, D8013);
+  } else if (rtc_available && PLC_BIT_TEST(M8018)) {
+    if (!rtc_clock_running()) {
+      rtc_unavailable();
+      return;
     }
+    /* Avoid a torn read when the low half rolls over between APB reads. */
+    for (attempt = 0; attempt < 4; attempt++) {
+      high = RTC->CNTH & 0xFFFFU;
+      low = RTC->CNTL & 0xFFFFU;
+      if (high == (RTC->CNTH & 0xFFFFU))
+        break;
+    }
+    if (attempt == 4) {
+      rtc_unavailable();
+      return;
+    }
+    timecount = (high << 16) | low;
+    temp = timecount / 86400;
+    year = 2016;
+    while (temp >= (u32)(Is_Leap_Year(year) ? 366 : 365)) {
+      temp -= Is_Leap_Year(year) ? 366U : 365U;
+      year++;
+    }
+    month = 1;
+    for (;;) {
+      days = mon_table[month - 1];
+      if (month == 2 && Is_Leap_Year(year))
+        days++;
+      if (temp < days)
+        break;
+      temp -= days;
+      month++;
+    }
+    D8018 = year;
+    D8017 = month;
+    D8016 = temp + 1;
     temp = timecount % 86400;
     D8015 = temp / 3600;
     D8014 = (temp % 3600) / 60;
@@ -191,52 +257,53 @@ u16 temp1=0;
 }
 
 void RTC_Init(void) {
-u16 u16_WaitForOscSource;
+u32 backup_access;
+u8 retained;
 
-  RCC->APB1ENR |= RCC_APB1Periph_PWR | RCC_APB1Periph_BKP;
-
-  if ( BKP->DR1 != 0x5A5A ) {
-    PWR->CR |= PWR_CR_DBP;
-
-//    while ( RCC_GetFlagStatus(RCC_FLAG_LSERDY) == RESET) ;
-
-    RCC->BDCR |=  RCC_BDCR_BDRST; //Reset the backup domain
-    RCC->BDCR &= ~RCC_BDCR_BDRST;
- 
-    //Select the external 32768 Hz crystal as the clock source and enable clocking
-    RCC->BDCR |=  RCC_BDCR_RTCEN | RCC_BDCR_RTCSEL_LSE;
- 
-    while ( (RTC->CRL & RTC_FLAG_RTOFF) == (uint16_t)RESET ) { }
-
-    RTC->CRL  |=  RTC_CRL_CNF;
-    RTC->PRLL  = 0x7FFF;         //Prescaler register: divide by 32768
-    RTC->CRL  &=  ~RTC_CRL_CNF;
- 
-    //Set the enable bit and wait for the ready bit
-    RCC->BDCR |= RCC_BDCR_LSEON;
-    while ((RCC->BDCR & RCC_BDCR_LSEON) != RCC_BDCR_LSEON) {}
- 
-    RTC->CRL &= (uint16_t)~RTC_CRL_RSF;
-    while ( (RTC->CRL & RTC_CRL_RSF) != RTC_CRL_RSF ) {}
-
-    BKP->DR1 = 0x5A5A;
-    while ( (RTC->CRL & RTC_FLAG_RTOFF) == (uint16_t)RESET ) { }
-    PWR->CR &= ~PWR_CR_DBP;
-
-  } else {
-///    for ( u16_WaitForOscSource = 0; u16_WaitForOscSource < 5000; u16_WaitForOscSource++ );
-///    if ( ( RCC->CSR & ((uint32_t)1 << ( RCC_FLAG_PORRST & 0x1F))) != 0 );
-//    if ( RCC_GetFlagStatus(RCC_FLAG_PORRST) != RESET );
-////    else
-////      if ( ( RCC->CSR & ((uint32_t)1 << ( RCC_FLAG_PINRST & 0x1F))) != 0 );
-//      if ( RCC_GetFlagStatus(RCC_FLAG_PINRST) != RESET ){}
-
-////    RCC->CSR |= ((uint32_t)0x01000000);
-
-////    RTC_WaitForLastTask();
-//    while ( (RTC->CRL & RTC_FLAG_RTOFF) == 0 ) { }
-  }
-
-  PLC_BIT_ON(M8018);
+  rtc_unavailable();
   PLC_BIT_OFF(M8015);
+  RCC->APB1ENR |= RCC_APB1ENR_PWREN | RCC_APB1ENR_BKPEN;
+  (void)RCC->APB1ENR;          //Complete the peripheral clock enable before access
+  backup_access = PWR->CR & PWR_CR_DBP;
+  PWR->CR |= PWR_CR_DBP;
+  (void)PWR->CR;
+
+  retained = BKP->DR1 == RTC_BACKUP_MAGIC &&
+             (RCC->BDCR & RCC_BDCR_RTCSEL) == RCC_BDCR_RTCSEL_LSE &&
+             !(RCC->BDCR & RCC_BDCR_LSEBYP);
+  if (!retained) {
+    /* Only an uninitialized/incompatible backup domain may be reset. */
+    RCC->BDCR |= RCC_BDCR_BDRST;
+    RCC->BDCR &= ~RCC_BDCR_BDRST;
+  }
+  RCC->BDCR |= RCC_BDCR_LSEON;
+  if (!rtc_wait(&RCC->BDCR, RCC_BDCR_LSERDY, RTC_LSE_WAIT_LIMIT))
+    goto init_done;
+  if (!retained)
+    RCC->BDCR = (RCC->BDCR & ~RCC_BDCR_RTCSEL) | RCC_BDCR_RTCSEL_LSE;
+  RCC->BDCR |= RCC_BDCR_RTCEN;
+  /* APB shadow registers must be synchronized on every reset, including
+   * when the battery-backed counter and marker have been retained. */
+  if (!rtc_sync() || !rtc_wait(&RTC->CRL, RTC_CRL_RTOFF, RTC_WAIT_LIMIT))
+    goto init_done;
+  if (!retained) {
+    RTC->CRL |= RTC_CRL_CNF;
+    RTC->PRLH = 0;
+    RTC->PRLL = 32767U;
+    RTC->CNTH = 0;             //January 1, 2016, 00:00:00
+    RTC->CNTL = 0;
+    RTC->CRL &= ~RTC_CRL_CNF;
+    if (!rtc_wait(&RTC->CRL, RTC_CRL_RTOFF, RTC_WAIT_LIMIT))
+      goto init_done;
+  }
+  /* Do not overwrite a retained clock with an unexpected prescaler. */
+  if ((RTC->PRLH & 0xFU) != 0 || (RTC->PRLL & 0xFFFFU) != 32767U)
+    goto init_done;
+  BKP->DR1 = RTC_BACKUP_MAGIC; //Mark valid only after setup has succeeded
+  rtc_available = 1;
+  PLC_BIT_ON(M8018);
+
+init_done:
+  if (!backup_access)
+    PWR->CR &= ~PWR_CR_DBP;
 }
