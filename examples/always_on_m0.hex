@@ -1,0 +1,3 @@
+# Plain little-endian instruction bytes for this project's local runtime.
+# LD M8000; OUT M0; END. Not an Intel HEX file or a GX project export.
+C2 01 00 8E 00 C0 0F 00

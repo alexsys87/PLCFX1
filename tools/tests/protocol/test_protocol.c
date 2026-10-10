@@ -3,15 +3,23 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include "../../../src/PLC_Com.c"
 
-u8 PLC_NEW_PROG;
+#ifdef TEST_WITH_RUNTIME
+#include "../../../src/ladder.c"
+#else
+volatile u8 PLC_NEW_PROG;
+static int requested_run = -1;
+void PLC_Runtime_RequestRun(u8 run) { requested_run = run != 0; }
+#endif
 static unsigned writes, erased_pages, cases;
 static bool fail_flash;
 bool plc_ram_range(uint32_t offset, uint32_t length) {
   return offset <= PLC_RAM_SIZE && length <= PLC_RAM_SIZE - offset;
 }
 u32 board_apb2_hz(void) { return 72000000U; }
+#ifndef TEST_WITH_RUNTIME
 u32 PLC_BIT_TEST(u32 bit) {
   assert(bit < PLC_RAM_SIZE * 8U);
   return PLC_8BIT((bit >> 3)) & (1U << (bit & 7U));
@@ -24,6 +32,7 @@ void PLC_BIT_OFF(u32 bit) {
   assert(bit < PLC_RAM_SIZE * 8U);
   PLC_8BIT((bit >> 3)) &= ~(1U << (bit & 7U));
 }
+#endif
 bool plc_flash_write_block(uint32_t address, const uint16_t *data) {
   assert(address >= ROM_ADDR && address <= PLC_FLASH_END - PLC_FLASH_BLOCK_SIZE);
   assert(!(address & (PLC_FLASH_BLOCK_SIZE - 1U)));
@@ -47,6 +56,7 @@ static void map_region(uintptr_t address, size_t length) {
 static void reset(void) {
   memset((void *)RAM_ADDR, 0, PLC_RAM_SIZE);
   memset((void *)0x08000000UL, 255, 0x10000U);
+  memcpy((void *)ROM_ADDR, PLC_ROM, sizeof(PLC_ROM)); /* Factory .plc_rom image. */
   memset((void *)0x40000000UL, 0, 0x24000U);
   memset(tx_data, 0xAB, sizeof(tx_data));
   memset(rx_data, 0, sizeof(rx_data));
@@ -55,8 +65,22 @@ static void reset(void) {
   writes = erased_pages = 0; fail_flash = false;
   PLC_UPDATE_PROG = PLC_NEW_PROG = 0;
   PLC_DATA_INIT();
+#ifdef TEST_WITH_RUNTIME
+  PLC_Runtime_Init();
+#else
+  requested_run = -1;
+#endif
 }
-static void byte(u8 value) { USART1->DR = value; RX_Process(); }
+static void byte(u8 value) {
+  USART1->DR = value; RX_Process();
+#ifndef TEST_WITH_RUNTIME
+  /* Model the main-loop boundary, outside RX_Process, in transport-only tests. */
+  if (requested_run >= 0) {
+    PLC_8BIT(Addr_M8) = requested_run ? 9 : 10;
+    requested_run = -1;
+  }
+#endif
+}
 static void complete(void) {
   DMA1->ISR = DMA_ISR_TCIF4; DMA1_Channel4_IRQHandler();
   DMA1->ISR = 0;
@@ -92,7 +116,8 @@ static void response(const char *hex) {
 }
 static void force_tests(void) {
   reset();
-  packet('E', "78000"); ack(); assert(PLC_BIT_TEST(0x80));
+  assert(PLC_8BIT(Addr_M8) == 10); /* Boot STOP. */
+  packet('E', "78000"); ack(); assert(PLC_BIT_TEST(0x80) && PLC_8BIT(Addr_M8) == 10);
   packet('E', "88000"); ack(); assert(!PLC_BIT_TEST(0x80));
   packet('E', "7250E"); ack(); assert(PLC_8BIT(Addr_M8) == 10);
   PLC_UPDATE_PROG = 1;
@@ -268,14 +293,109 @@ static void malformed_matrix(void) {
   }
   packet('E', "7Z000"); nak(); packet('E', "70Z00"); nak();
   packet('E', "700Z0"); nak(); packet('E', "7000Z"); nak();
+  packet('9', "000001"); nak(); packet('E', "FF"); nak();
+  packet('E', "10800002AABB"); nak(); /* unsupported parameter write is not ACKed */
+  packet('0', "00000100"); nak(); packet('1', "000001AABB"); nak();
+  packet('E', "11008000"); nak(); packet('E', "4200"); nak();
+  packet('B', "00"); nak(); packet('7', "008000"); nak();
+  packet('1', "01C00109"); nak(); packet('1', "01BF02FF09"); nak();
+  packet('E', "1001C00109"); nak(); packet('E', "1101C00109"); nak();
+  packet('7', "0E00"); nak(); packet('8', "0E07"); nak();
+  packet('E', "7000E"); nak(); packet('E', "8070E"); nak();
   assert(!writes && !PLC_UPDATE_PROG);
 }
-int main(void) {
+static void connect_upload_tests(void) {
+  reset();
+  usart(19200);
+  byte(0xFF); byte('x'); assert(USART1->BRR == 3750 && !tx_count);
+  byte(5); ack();
+  packet('0', "0E0204"); response("66620600");
+  packet('0', "01C001"); response("0A");
+  packet('E', "7250E"); ack();
+  packet('E', "61"); ack();
+  packet('E', "11805C08C201008E00C00F00"); ack();
+  fail_flash = true;
+  packet('E', "7240E"); nak(); assert(PLC_8BIT(Addr_M8) == 10 && bctrl1 == 0);
+  fail_flash = false;
+  packet('E', "42"); ack();
+  packet('E', "01805C08"); response("C201008E00C00F00");
+  packet('E', "7240E"); ack();
+  packet('0', "01C001"); response("09");
+  packet('0', "000001"); response("00"); /* transport fixture does not execute ladder */
+  packet('E', "7250E"); ack();
+  packet('0', "01C001"); response("0A");
+}
+#ifdef TEST_WITH_RUNTIME
+static void integration_tests(void) {
+  reset();
+  byte(5); ack();
+  packet('E', "11805C08C201008E00C00F00"); ack();
+  packet('E', "42"); ack();
+  packet('E', "01805C08"); response("C201008E00C00F00");
+  packet('E', "7240E"); ack();
+  assert(!PLC_BIT_TEST(M8000) && PLC_Runtime_RunRequested()); /* IRQ only queues. */
+  PLC_Main_Parser();
+  packet('1', "01C0010A"); nak(); assert(PLC_BIT_TEST(M8000));
+  packet('7', "0E01"); nak(); assert(!PLC_BIT_TEST(M8001));
+  packet('0', "000001"); response("01");
+  packet('E', "7250E"); ack(); PLC_Main_Parser();
+  packet('E', "11805C08C2010D8E00CC0F00"); ack();
+  packet('E', "42"); ack();
+  packet('E', "7240E"); ack(); PLC_Main_Parser();
+  packet('0', "018001"); response("00");
+  for (unsigned i = 0; i < 500; i++) PLC_Runtime_Tick1ms();
+  PLC_Main_Parser();
+  assert(PLC_BIT_TEST(M8013));
+  packet('0', "018001"); response("01");
+  for (unsigned i = 0; i < 500; i++) PLC_Runtime_Tick1ms();
+  PLC_Main_Parser();
+  assert(!PLC_BIT_TEST(M8013));
+  packet('0', "018001"); response("00");
+  packet('E', "7250E"); ack(); PLC_Main_Parser();
+  assert(!PLC_BIT_TEST(M8000) && !PLC_8BIT(Addr_Y));
+  puts("PASS: actual protocol + runtime M0 and M8013->Y0 examples, simulated 1ms ticks, STOP clears outputs");
+}
+#endif
+int main(int argc, char **argv) {
+  map_region(SRAM_BASE + 0x1000U, 0x1000U); /* Pulse workspace at 0x1C00. */
   map_region(RAM_ADDR, PLC_RAM_SIZE);
   map_region(0x08000000UL, 0x10000U);
   map_region(0x40000000UL, 0x24000U);
+#ifdef TEST_WITH_RUNTIME
+  if (argc == 2 && !strcmp(argv[1], "--integration")) {
+    integration_tests(); return 0;
+  }
+#endif
+  if (argc == 2 && !strcmp(argv[1], "--wire")) {
+    reset();
+#ifdef TEST_WITH_RUNTIME
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    uint64_t elapsed_ms = 0;
+#endif
+    int value;
+    while ((value = getchar()) != EOF) {
+      byte((u8)value);
+#ifdef TEST_WITH_RUNTIME
+      /* Simulated TIM2 ticks track host wall time for the complete CLI smoke.
+       * The physical timer ISR is not emulated by this pipe fixture. */
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      uint64_t current_ms = ((uint64_t)(now.tv_sec - start.tv_sec) * 1000000000ULL +
+                             now.tv_nsec - start.tv_nsec) / 1000000ULL;
+      while (elapsed_ms < current_ms) { PLC_Runtime_Tick1ms(); elapsed_ms++; }
+      PLC_Main_Parser();
+#endif
+      if (UART_SEND_READY) TX_Process();
+      if (!UART_Sended) {
+        assert(fwrite(tx_data, 1, tx_count, stdout) == tx_count);
+        fflush(stdout);
+        complete();
+      }
+    }
+    return 0;
+  }
   force_tests(); bounds_tests(); flash_tests(); search_tests();
-  retention_tests(); monitor_tests(); dma_tests(); malformed_matrix();
+  retention_tests(); monitor_tests(); dma_tests(); malformed_matrix(); connect_upload_tests();
   printf("PASS: %u framed protocol cases plus DMA, overflow, retention and malformed-stream checks (ASan/UBSan)\n", cases);
   return 0;
 }

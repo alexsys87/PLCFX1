@@ -46,18 +46,8 @@ extern const unsigned char PLC_BIT_AND[];
 #define Addr_D0000      0x2000  // In request
 #define Addr_D1000      0x27D0  // In request
 
-#define AddrB_S         0x0000  // S000  - S999
-#define AddrB_X         0x0080  // X000  - X377
-#define AddrB_Y         0x00A0  // Y000  - Y377
-#define AddrB_T3        0x00E0  // T000 - T255 coil; original annotation incomplete.
-
-#define AddrB_TO        0x0600  // T000  - T511  Overflow coil
-#define AddrB_CO        0x0E00  // C000  - C255  Overflow coil
-#define AddrB_TE        0x1600  // T000  - T511  Enable coil
-#define AddrB_T1        0x2300  // T000 - T255 coil; original annotation incomplete.
-#define AddrB_T2        0x2600  // T000 - T255 coil; original annotation incomplete.
-#define AddrB_CE        0x2700  // C000 - C255 enable coil; original annotation incomplete.
-#define AddrB_Tx        0x3800  // T000 - T255 coil; purpose not documented in the original source.
+/* Addr_* are BYTE offsets. A linear bit address is Addr_* * 8 + index.
+ * Contradictory historical AddrB_* aliases were removed. */
 
 #define ROM_ADDR        PLC_PROGRAM_BASE
 #define START_ADDR      0x005C

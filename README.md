@@ -1,116 +1,135 @@
-# PLCFX1
+# PLCFX1 — minimal FX1N-style bench PLC
 
-Register-only STM32F103C8 **BluePill** firmware implementing a Mitsubishi FX-style
-PLC instruction runtime, serial programming protocol, retained data storage and
-real-time clock support. No HAL or Standard Peripheral Library is used.
+Register-only firmware for **STM32F103C8 BluePill: 64 KB Flash / 20 KB SRAM**.
+No HAL or Standard Peripheral Library. The immediate goal is a reproducible
+**connect → STOP → upload → verify → RUN → monitor → STOP** bench test.
 
-## Instruction reference
+**This is a small FX1N-style subset, not a drop-in Mitsubishi FX1N replacement.**
+GX Developer/GX Works2 connections and their generated machine code have not
+been tested. The included Python client and example programs use this project's
+inherited wire protocol and documented local instruction encoding. No actual
+BluePill or load has been tested. Do not connect machinery or industrial signals.
 
-Read [Tutorial 5: Mitsubishi FX1S and FX1N Instruction System (V2.0)](Tutorial%205%20The%20Mitsubishi%20FX1S%20and%20FX1N%20Instruction%20System%20(V2.0).md)
-for the official FX1S baseline, FX1N differences, command inventory and examples.
-It separates Mitsubishi requirements from the current interpreter's limitations;
-it is not a claim of full FX1S/FX1N compatibility. The unofficial mixed-family
-bytecode tutorial has been replaced; binary encoding is not specified by the
-programming manual and must be validated independently.
+## First test
 
-## IAR Embedded Workbench
+See **[the connection guide](docs/connection-test.md)** for wiring, bytecode,
+protocol details and recovery after a failed upload.
 
-Open **`ewarm/plc_fx1_stm32f103.eww`**. The project and its debugger/C-STAT
-sidecars use the same descriptive name and remain together in `ewarm/`.
-Source and include paths are relative to that directory. Debug and Release
-share target definitions and include paths; Release retains its optimization
-settings. Build products and local IDE state are ignored by Git.
-
-## Hardware and CMSIS
-
-- Device: `STM32F103xB`, STM32F103C8, Cortex-M3, 64 KB Flash / 20 KB SRAM.
-- Clock: 8 MHz HSE to 72 MHz. If HSE fails, HSI/2 PLL provides 64 MHz;
-  if PLL fails, reset HSI remains active. USART and timer rates follow the
-  actual clock rather than assuming 72 MHz.
-- USART1: PA9 TX / PA10 RX, initial 19200 baud, 8N1. DMA1 channel 4 handles TX.
-  The existing programming handshake can select 9600 baud.
-- TIM2: 1 ms PLC tick. JTAG is disabled; **SWD remains available**.
-- RUN input: PB8, internal pull-down (disconnected means STOP).
-- RUN LED: PC13, active-low BluePill LED. Optional error LED: PB12, active-low.
-- RTC: 32.768 kHz LSE required. Startup waits are bounded; LSE failure leaves
-  calendar support unavailable rather than hanging indefinitely or pretending
-  LSI is accurate. A valid battery-backed counter survives MCU resets.
-
-`CMSIS/device/` contains the STM32F103xB header, IAR startup and system files
-from [stm32_rework_station](https://github.com/alexsys87/stm32_rework_station).
-Existing Cortex-M3 CMSIS core/compiler support remains in `CMSIS/`.
-Vendor copyright/license notices are preserved. `platform.h` only supplies
-fixed-width legacy type aliases used by the interpreter.
-
-`App/main.c` initializes GPIO, RCC, DMA, USART and TIM through registers;
-`src/board_clock.c`, `src/plc_flash.c` and `src/RTC.C` implement the remaining
-hardware support directly through CMSIS register definitions.
-
-## C8 memory layout
-
-| Area | Address range | Size |
-|---|---|---|
-| Firmware code/constants | `0x08000000–0x0800BFFF` | 48 KB |
-| PLC header/program, seven 2 KB blocks | `0x0800C000–0x0800F7FF` | 14 KB |
-| Retained PLC data, CRC + completion marker | `0x0800F800–0x0800FFFF` | 2 KB |
-| Runtime globals, stack and heap | `0x20000000–0x20001BFF` | 7 KB |
-| Program pulse-state bitmap | `0x20001C00–0x20001FFF` | 1 KB |
-| PLC registers | `0x20002000–0x20004FFF` | 12 KB |
-
-The IAR linker file is `ewarm/bluepill_plc.icf`. Stack reservation is 2 KB;
-heap reservation is zero. Fixed PLC RAM areas are excluded from C runtime
-initialization and explicitly cleared at startup.
-
-The factory PLC header is part of the firmware download image at C000.
-Reflashing firmware can therefore replace that PLC storage page. Mass erase
-is disabled in the project, but preservation of other program/retained pages
-still depends on the actual programmer; back up PLC contents before flashing.
-
-**Maximum program size is 6000 steps**, reduced from 8000 to fit guaranteed
-C8 Flash. Ordinary data registers are D0000–D1999. Do not depend on unofficial
-128 KB Flash found in some BluePill clones. Each 2 KB storage update erases
-both of its 1 KB pages; writes cannot target firmware or exceed C8 Flash.
-The historical retained-block identifier 10 is mapped to the final 2 KB, not
-to an out-of-range physical block. Retained records require a valid CRC and
-completion marker before recovery. Flash writes pause interrupts and are not
-power-fail atomic; an interrupted retained update can lose the previous backup.
-The board still needs a real power-fail signal and sufficient energy reserve
-if `PLC_DATA_KEEP()` is to be called automatically at power loss.
-
-## Validation
+1. Build/flash MCU firmware through **ST-Link/SWD**, not the programming UART.
+2. Connect a **3.3 V TTL** USB UART: adapter RX→PA9, TX→PA10, GND→GND.
+3. Use 19200 baud, 8N1, no flow control. Boot is always **STOP**; no RUN jumper.
+4. Upload a no-load M0 test, verify Flash, RUN and monitor:
 
 ```sh
-python3 tools/check_project.py
-python3 tools/check_project.py --preprocess
-python3 tools/check_arm_build.py
-python3 tools/test_rtc.py --sanitize
-python3 tools/test_protocol.py
+python3 -m pip install pyserial
+python3 tools/plc_link.py --port COM3 identify
+python3 tools/plc_link.py --port COM3 smoke examples/always_on_m0.hex --seconds 3
 ```
 
-The dependency check uses GCC; the ARM check requires `arm-none-eabi-gcc`
-with newlib. It compiles every translation unit **as C**, including `.C` files,
-and links a temporary diagnostic image with the C8 memory reservations and a
-vector adapter derived from the IAR startup table. It is **not flashable** and
-does not validate IAR assembly/runtime initialization. Build Debug and Release
-in IAR and inspect their linker maps before flashing.
+On Linux use `/dev/ttyUSB0` instead of `COM3`. `smoke` attempts STOP on exit.
+The example is `LD M8000; OUT M0; END`; success includes M0 becoming true.
+The second example, `examples/clock_y0.hex`, copies M8013 to Y0/PB0. It needs
+no load when monitored over UART. PC13 is the RUN status LED, **not Y0**.
 
-Host RTC tests check 44,195 Gregorian dates and modeled register failures.
-Host protocol tests use ASan/UBSan and cover 141 framed cases plus receive
-overflow, DMA ownership and retained-data staging. Flash is stubbed in those
-tests, not electrically emulated. Programming is stop-and-wait: bytes arriving
-while a response owns the DMA buffer are dropped; retry with a fresh STX.
+## Interpreter
 
-## Remaining limitations
+The previous broad but unsafe interpreter has been replaced with a bounded,
+explicit subset. See **[runtime-subset.md](docs/runtime-subset.md)** for exact
+commands, encodings and restrictions. Basic contact/coil logic, branch stacks,
+PLS/PLF, timers T0..255, ordinary counters C0..199, MOV and INC form the initial
+test surface. Unsupported instructions fail to STOP; they do not fall through
+to operand words or empty handlers. Scan length, operand ranges and stacks are
+checked. Physical outputs are refreshed only after a complete scan and gated
+off in STOP. This is not a certified safety mechanism or a hardware watchdog.
 
-Board input filtering, output refresh and I/O configuration were already
-disabled in the original source. Their called hooks remain explicitly empty;
-this register port does not invent an external PLC I/O circuit or pin mapping.
-The original interpreter also contains incomplete/weak instruction handlers
-and is not a fully audited or memory-safe execution engine. Protocol boundary
-checks are not a substitute for validating ladder programs and device indexes.
-GNU compilation still reports legacy interpreter warnings, including potentially
-uninitialized values and signed comparisons; this port does not claim to resolve
-every instruction-runtime defect.
-Use only supported programs within the documented memory limits. Verify clock
-failure, UART programming, page rewrite, retention, RTC and tick timing on the
-actual board; no physical BluePill test or native IAR build has been performed.
+The [Mitsubishi instruction tutorial](Tutorial%205%20The%20Mitsubishi%20FX1S%20and%20FX1N%20Instruction%20System%20(V2.0).md)
+documents the official model requirements, not the firmware's implemented subset.
+
+## Temporary BluePill pin map
+
+All bench signals below are **3.3 V GPIO**, without PLC isolation/drivers.
+
+| Function | Pins |
+|---|---|
+| X0..X7, active high, pull-down | PA0..PA7 |
+| Y0..Y7, active high | PB0, PB1, PB5, PB6, PB7, PB8, PB9, PB10 |
+| USART1 TX / RX | PA9 / PA10 |
+| RUN LED, active low | PC13 |
+| Optional error LED, active low | PB12 |
+| SWD debug/flash | PA13 / PA14 |
+
+Inputs have a default 10 ms debounce and are frozen before each scan. Outputs
+are initialized low before GPIO mode changes. RUN/STOP is software-controlled;
+PB8 is now Y5, not a RUN input. Do not connect 5 V UART, RS232 voltage levels,
+RS422 or 24 V PLC wiring directly. Power the board from one suitable source.
+
+Clock: 8 MHz HSE→72 MHz, with bounded HSI/PLL fallback. UART/TIM2 derive their
+rates from the actual clock. TIM2 supplies a 1 ms tick; timer values are updated
+in the main execution context. RTC LSE failure does not block boot, and RTC is
+not needed for the M8013 test. RTC registers refresh once per second when valid.
+CMSIS device files originated in `alexsys87/stm32_rework_station`; notices remain.
+
+## Firmware builds
+
+### IAR
+
+Open **`ewarm/plc_fx1_stm32f103.eww`**, build Debug or Release and flash through
+SWD. Native IAR compilation has not been performed in this environment.
+
+### GNU Arm
+
+With `arm-none-eabi-gcc`, newlib and binutils installed:
+
+```sh
+python3 tools/build_bluepill.py
+```
+
+`build/gcc/plc_fx1n_bluepill.{elf,hex,bin}` are flashable MCU images. The reset
+adapter initializes C data/BSS and uses the checked-in STM32F103xB vector list.
+Flash the BIN at **0x08000000**, or use the address-bearing Intel HEX. These
+firmware files are **not** the raw-byte `.hex` PLC examples accepted by the client.
+The older `check_arm_build.py` remains a diagnostic-only linker check.
+
+## Memory and persistence
+
+| Area | Range | Size |
+|---|---|---:|
+| Firmware | 08000000–0800BFFF | 48 KB |
+| PLC header/program | 0800C000–0800F7FF | 14 KB |
+| Legacy retained-data store | 0800F800–0800FFFF | 2 KB |
+| Globals + 2 KB stack | 20000000–20001BFF | 7 KB |
+| Pulse state | 20001C00–20001FFF | 1 KB |
+| PLC register image | 20002000–20004FFF | 12 KB |
+
+**Maximum program body: 6000 words**, plus the 92-byte parameter header.
+20,000 words do not fit this fixed partition or pulse-state reservation. Do not
+assume unofficial extra Flash on clone chips. The first test needs only four words.
+
+The factory firmware image contains the header and an END-only program at C000.
+Reflashing can overwrite saved PLC contents; a raw BIN also spans the gap before
+the header. Back up any program first. Uploads rewrite Flash in place and are
+**not power-loss atomic**; there is no persistent program-image CRC. Boot STOP,
+runtime validation and full client readback do not detect every possible corrupted
+but syntactically valid program. Re-upload after interruption before RUN.
+
+Automatic retained-data save/restore is **not enabled in this minimal boot path**.
+M/D state is volatile across reset. Legacy retention helpers remain independently
+tested, but are not a guarantee of power-loss retention.
+
+## Host validation
+
+```sh
+python3 tools/check_project.py --preprocess
+python3 tools/check_arm_build.py
+python3 tools/test_runtime.py
+python3 tools/test_protocol.py
+python3 tools/test_io.py
+python3 tools/test_rtc.py --sanitize
+python3 tools/build_bluepill.py
+```
+
+Tests cover actual runtime bytecode scans, malformed programs, timer/counter
+behavior, protocol framing, Python-client uploads/readback, combined runtime/wire
+transactions, modeled GPIO, and RTC calendars. Flash/UART/DMA are modeled in host
+tests. Successful builds and tests **do not establish electrical operation,
+commercial programming-software compatibility or industrial safety**.

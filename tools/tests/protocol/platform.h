@@ -29,4 +29,9 @@ typedef struct { volatile u32 CCR, CNDTR, CPAR, CMAR; } fake_channel;
 #define DMA_ISR_TEIF4 (1U << 15)
 #define DMA_IFCR_CGIF4 (1U << 12)
 #define __DMB() __asm__ volatile ("" ::: "memory")
+/* Single-threaded fixture: IRQ mask state is modeled, not CPU interrupt timing. */
+static u32 fake_primask;
+static inline u32 __get_PRIMASK(void) { return fake_primask; }
+static inline void __disable_irq(void) { fake_primask = 1U; }
+static inline void __set_PRIMASK(u32 value) { fake_primask = value; }
 #endif
