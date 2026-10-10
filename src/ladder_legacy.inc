@@ -686,28 +686,37 @@ u16 Z4_Z7(u16 temp) {
   else return 0;
 }
 
+static u32 legacy_read_register_pair(volatile u16 *high_word,
+                                     volatile u16 *low_word) {
+  u32 high, low;
+  /* Sequence volatile reads; widen before shifting on all C targets. */
+  high = *high_word;
+  low = *low_word;
+  return (high << 16) | low;
+}
+
 u32 DZ0_Z3(u16 temp) {
 
-  if      ( temp == 0 ) return (D8029 << 16) + D8028;
-  else if ( temp == 1 ) return (D8183 << 16) + D8182;
-  else if ( temp == 2 ) return (D8184 << 16) + D8184;
-  else if ( temp == 3 ) return (D8185 << 16) + D8186;
+  if      ( temp == 0 ) return legacy_read_register_pair(&D8029, &D8028);
+  else if ( temp == 1 ) return legacy_read_register_pair(&D8183, &D8182);
+  else if ( temp == 2 ) return legacy_read_register_pair(&D8184, &D8184);
+  else if ( temp == 3 ) return legacy_read_register_pair(&D8185, &D8186);
   else return 0;
 }
 
 u32 DZ4_Z7(u16 temp) {
 
-  if      ( temp == 0 ) return (D8189 << 16) + D8188;
-  else if ( temp == 1 ) return (D8191 << 16) + D8190;
-  else if ( temp == 2 ) return (D8193 << 16) + D8192;
-  else if ( temp == 3 ) return (D8193 << 16) + D8194;
+  if      ( temp == 0 ) return legacy_read_register_pair(&D8189, &D8188);
+  else if ( temp == 1 ) return legacy_read_register_pair(&D8191, &D8190);
+  else if ( temp == 2 ) return legacy_read_register_pair(&D8193, &D8192);
+  else if ( temp == 3 ) return legacy_read_register_pair(&D8193, &D8194);
   else return 0;
 }
 
 //=======================================================================================================
 s16 get_value() {  
 s32 temp = 0; 
-u32 type_of, temp1, temp2, temp3, temp4;
+u32 type_of, temp1, temp2, temp3;
 
   temp1 = legacy_word();
   PLC_PC++;
@@ -722,7 +731,6 @@ u32 type_of, temp1, temp2, temp3, temp4;
 //  temp2 = ((temp2 & 0xFFU) << 8) | mov_d_addr;
 
   temp3 = PLC_v_z_addr(temp2);
-  temp4 = PLC_D_C_T_addr(temp2) >> 8;
 
   switch(type_of) {
     case  0x8080: temp = temp2; break;  //Calculate the K value
@@ -825,7 +833,7 @@ u32 type_of, temp1, temp2, temp3, temp4;
 //=======================================================================================================
 #ifdef USE_DOUBLE
 s32 get_valueD(void) {   
-u32 type_of, temp1, temp2, temp3, temp4;
+u32 type_of, temp1, temp2, temp3;
 u32 temp = 0;
 s32_union tempD = {0};
 
@@ -842,7 +850,6 @@ s32_union tempD = {0};
 //  temp2 = ((temp2 & 0xFFU) << 8) | mov_d_addr;
 
   temp3 = PLC_v_z_addr(temp2);
-  temp4 = PLC_D_C_T_addr(temp2) >> 8;
 
   switch ( type_of ) {    
     case  0x8080: tempD.d16[0] = temp2; PLC_PC++; tempD.d16[1] = get_value(); PLC_PC -= 2; break;//Calculate the K value
@@ -1114,9 +1121,12 @@ u32 temp = 0;
 //=======================================================================================================
 //=======================================================================================================
 //=======================================================================================================
-void timer_enable(u32 timer_number) {     
+void timer_enable(u32 timer_number) {
+u16 current, preset;
 
-  if ( PLC_16BIT(Addr_TVal + timer_number * 2) < PLC_16BIT(Addr_TMax + timer_number * 2) ) {
+  current = PLC_16BIT(Addr_TVal + timer_number * 2);
+  preset = PLC_16BIT(Addr_TMax + timer_number * 2);
+  if ( current < preset ) {
     if ( PLC_BIT_TEST((Addr_TO * 8U) + timer_number) )
       PLC_BIT_ON((0x0580U * 8U) + timer_number);             //Reset coil
     else {
@@ -3475,28 +3485,42 @@ u32 temp1,temp;
 
 void TADD(void) {  
 u32 temp,temp1,temp2;
+u16 left, right;
 
   if ( PLC_ACC_BIT & 0x01 ) { 
     temp1 = get_addr();              
     temp2 = get_addr();  
     temp  = get_addr();
-    PLC_16BIT(temp)     = PLC_16BIT(temp1)     + PLC_16BIT(temp2);
-    PLC_16BIT(temp + 2) = PLC_16BIT(temp1 + 2) + PLC_16BIT(temp2 + 2);
-    PLC_16BIT(temp + 4) = PLC_16BIT(temp1 + 4) + PLC_16BIT(temp2 + 4);
+    left = PLC_16BIT(temp1);
+    right = PLC_16BIT(temp2);
+    PLC_16BIT(temp) = left + right;
+    left = PLC_16BIT(temp1 + 2);
+    right = PLC_16BIT(temp2 + 2);
+    PLC_16BIT(temp + 2) = left + right;
+    left = PLC_16BIT(temp1 + 4);
+    right = PLC_16BIT(temp2 + 4);
+    PLC_16BIT(temp + 4) = left + right;
   } else
     PLC_PC += 3;
 }
 
 void TSUB(void) {
 u32 temp,temp1,temp2;
+u16 left, right;
 
   if ( PLC_ACC_BIT & 0x01 ) {
     temp1 = get_addr();
     temp2 = get_addr();
     temp  = get_addr();
-    PLC_16BIT(temp)     = PLC_16BIT(temp1)     - PLC_16BIT(temp2);
-    PLC_16BIT(temp + 2) = PLC_16BIT(temp1 + 2) - PLC_16BIT(temp2 + 2);
-    PLC_16BIT(temp + 4) = PLC_16BIT(temp1 + 4) - PLC_16BIT(temp2 + 4);
+    left = PLC_16BIT(temp1);
+    right = PLC_16BIT(temp2);
+    PLC_16BIT(temp) = left - right;
+    left = PLC_16BIT(temp1 + 2);
+    right = PLC_16BIT(temp2 + 2);
+    PLC_16BIT(temp + 2) = left - right;
+    left = PLC_16BIT(temp1 + 4);
+    right = PLC_16BIT(temp2 + 4);
+    PLC_16BIT(temp + 4) = left - right;
   } else
     PLC_PC += 3;
 }
@@ -3519,10 +3543,17 @@ u32 temp = 0;
 
 void TWR(void) {
 u32 temp = 0;
+u16 year, month, day, hour, minute, second;
 
   if ( PLC_ACC_BIT & 0x01 ) {
     temp = get_addr();
-    RTC_Set(PLC_16BIT(temp), PLC_16BIT(temp + 2), PLC_16BIT(temp + 4), PLC_16BIT(temp + 6), PLC_16BIT(temp + 8), PLC_16BIT(temp + 10));
+    year = PLC_16BIT(temp);
+    month = PLC_16BIT(temp + 2);
+    day = PLC_16BIT(temp + 4);
+    hour = PLC_16BIT(temp + 6);
+    minute = PLC_16BIT(temp + 8);
+    second = PLC_16BIT(temp + 10);
+    RTC_Set(year, month, day, hour, minute, second);
   } else
     PLC_PC++;
 }

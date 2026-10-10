@@ -208,10 +208,18 @@ u16 year;
 u8 month, days, attempt;
 
   if ( PLC_BIT_TEST(M8015) ) {
+    u16 set_year, set_month, set_day, set_hour, set_minute, set_second;
+    /* Read each volatile PLC word in a separate full expression. */
+    set_year = D8018;
+    set_month = D8017;
+    set_day = D8016;
+    set_hour = D8015;
+    set_minute = D8014;
+    set_second = D8013;
     /* Check the full PLC words before narrowing them to the public u8 API. */
-    if (D8017 >= 1 && D8017 <= 12 && D8016 >= 1 && D8016 <= 31 &&
-        D8015 <= 23 && D8014 <= 59 && D8013 <= 59)
-      RTC_Set(D8018, D8017, D8016, D8015, D8014, D8013);
+    if (set_month >= 1 && set_month <= 12 && set_day >= 1 && set_day <= 31 &&
+        set_hour <= 23 && set_minute <= 59 && set_second <= 59)
+      RTC_Set(set_year, set_month, set_day, set_hour, set_minute, set_second);
   } else if (rtc_available && PLC_BIT_TEST(M8018)) {
     if (!rtc_clock_running()) {
       rtc_unavailable();
@@ -247,12 +255,13 @@ u8 month, days, attempt;
     }
     D8018 = year;
     D8017 = month;
-    D8016 = temp + 1;
+    days = (u8)(temp + 1U);
+    D8016 = days;
     temp = timecount % 86400;
     D8015 = temp / 3600;
     D8014 = (temp % 3600) / 60;
     D8013 = (temp % 3600) % 60;
-    D8019 = RTC_Get_Week(D8018,D8017,D8016);
+    D8019 = RTC_Get_Week(year, month, days);
   }
 }
 

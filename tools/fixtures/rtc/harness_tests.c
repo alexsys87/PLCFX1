@@ -42,6 +42,11 @@ int main(void) {
   RTC_Get(); assert(D8018==2026 && D8017==10 && D8016==10);
   PLC_BIT_ON(M8015); D8017=257; RTC_Get();
   assert(RTC->CNTH==high && RTC->CNTL==low); PLC_BIT_OFF(M8015);
+  /* The PLC-word snapshot used by M8015 must preserve argument order. */
+  D8018=2027; D8017=11; D8016=12; D8015=13; D8014=14; D8013=15;
+  PLC_BIT_ON(M8015); RTC_Get(); PLC_BIT_OFF(M8015); RTC_Get();
+  assert(D8018==2027 && D8017==11 && D8016==12 &&
+         D8015==13 && D8014==14 && D8013==15);
   RTC->CRL &= ~RTC_CRL_RTOFF; fail_write=1;
   assert(RTC_Set(2026,1,1,0,0,0)==2); assert(!PLC_BIT_TEST(M8018));
   assert(!(PWR->CR & PWR_CR_DBP));
