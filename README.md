@@ -4,6 +4,15 @@ Register-only STM32F103C8 **BluePill** firmware implementing a Mitsubishi FX-sty
 PLC instruction runtime, serial programming protocol, retained data storage and
 real-time clock support. No HAL or Standard Peripheral Library is used.
 
+## Instruction reference
+
+Read [Tutorial 5: Mitsubishi FX1S and FX1N Instruction System (V2.0)](Tutorial%205%20The%20Mitsubishi%20FX1S%20and%20FX1N%20Instruction%20System%20(V2.0).md)
+for the official FX1S baseline, FX1N differences, command inventory and examples.
+It separates Mitsubishi requirements from the current interpreter's limitations;
+it is not a claim of full FX1S/FX1N compatibility. The unofficial mixed-family
+bytecode tutorial has been replaced; binary encoding is not specified by the
+programming manual and must be validated independently.
+
 ## IAR Embedded Workbench
 
 Open **`ewarm/plc_fx1_stm32f103.eww`**. The project and its debugger/C-STAT
