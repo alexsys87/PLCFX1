@@ -11,11 +11,13 @@ volatile u8 PLC_UPDATE_PROG;
 volatile u16 PLC_RUN_TIME;
 u16 X_DIY;
 static u32 primask;
+static u16 rtc_arguments[6];
 u32 __get_PRIMASK(void) { return primask; }
 void __disable_irq(void) { primask=1; }
 void __set_PRIMASK(u32 value) { assert(primask==1); primask=value; }
 void RTC_Set(u16 year,u8 month,u8 day,u8 hour,u8 minute,u8 second) {
-  (void)year;(void)month;(void)day;(void)hour;(void)minute;(void)second;
+  rtc_arguments[0]=year; rtc_arguments[1]=month; rtc_arguments[2]=day;
+  rtc_arguments[3]=hour; rtc_arguments[4]=minute; rtc_arguments[5]=second;
 }
 static void map(u32 base,u32 size) {
   assert(mmap((void *)(uintptr_t)base,size,PROT_READ|PROT_WRITE,
@@ -41,6 +43,40 @@ static void good_scan(void) {
 }
 int main(void) {
   map(0x20001000,0x1000); map(PLC_RAM_BASE,PLC_RAM_SIZE); map(ROM_ADDR,0x4000);
+  /* Sequenced volatile pair reads must also accept bit 31 without signed UB.
+     These assertions preserve legacy mappings, not endorse FX index semantics. */
+  D8029=0xFEDC; D8028=0x1234;
+  assert(DZ0_Z3(0)==0xFEDC1234U);
+  D8183=0x8000; D8182=0xFFFF;
+  assert(DZ0_Z3(1)==0x8000FFFFU);
+  D8184=0xABCD; assert(DZ0_Z3(2)==0xABCDABCDU);
+  D8185=0xFFFF; D8186=0x5678;
+  assert(DZ0_Z3(3)==0xFFFF5678U);
+  D8189=0x8001; D8188=0x0203;
+  assert(DZ4_Z7(0)==0x80010203U);
+  D8191=0xFEED; D8190=0xBEEF;
+  assert(DZ4_Z7(1)==0xFEEDBEEFU);
+  D8193=0xCAFE; D8192=0x7654; D8194=0x4321;
+  assert(DZ4_Z7(2)==0xCAFE7654U && DZ4_Z7(3)==0xCAFE4321U);
+  assert(DZ0_Z3(4)==0 && DZ4_Z7(4)==0);
+  const u16 time_ops[]={0x01C2,0x8E00,
+    0x0154,0x8600,0x8600,0x8603,0x8600,0x8606,0x8600,
+    0x0156,0x8606,0x8600,0x8603,0x8600,0x8609,0x8600,
+    0x015E,0x860C,0x8600,0x000F};
+  load(time_ops,COUNT(time_ops));
+  PLC_16BIT(Addr_D0000)=10; PLC_16BIT(Addr_D0000+2)=20;
+  PLC_16BIT(Addr_D0000+4)=30; PLC_16BIT(Addr_D0000+6)=1;
+  PLC_16BIT(Addr_D0000+8)=2; PLC_16BIT(Addr_D0000+10)=3;
+  PLC_16BIT(Addr_D0000+24)=2027; PLC_16BIT(Addr_D0000+26)=11;
+  PLC_16BIT(Addr_D0000+28)=12; PLC_16BIT(Addr_D0000+30)=13;
+  PLC_16BIT(Addr_D0000+32)=14; PLC_16BIT(Addr_D0000+34)=15;
+  good_scan();
+  assert(PLC_16BIT(Addr_D0000+12)==11 && PLC_16BIT(Addr_D0000+14)==22 &&
+         PLC_16BIT(Addr_D0000+16)==33);
+  assert(PLC_16BIT(Addr_D0000+18)==10 && PLC_16BIT(Addr_D0000+20)==20 &&
+         PLC_16BIT(Addr_D0000+22)==30);
+  assert(rtc_arguments[0]==2027 && rtc_arguments[1]==11 && rtc_arguments[2]==12 &&
+         rtc_arguments[3]==13 && rtc_arguments[4]==14 && rtc_arguments[5]==15);
   /* Actual words selected from restored source, not official FNC indexes. */
   const u16 arithmetic[]={0x01C2,0x8E00,
     0x0028,0x8005,0x8000,0x8600,0x8600, /* MOV K5 D0 */
