@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <workspace>
     <project>
-        <path>$WS_DIR$\PLC.ewp</path>
+        <path>$WS_DIR$\plc_fx1_stm32f103.ewp</path>
     </project>
     <batchBuild />
 </workspace>

@@ -1,0 +1,10 @@
+# IAR build outputs and machine-local workspace state.
+ewarm/Debug/
+ewarm/Release/
+ewarm/settings/
+ewarm/*.dep
+ewarm/*.log
+
+# Python validation cache.
+__pycache__/
+*.pyc

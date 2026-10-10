@@ -11,7 +11,7 @@ M8126 global flag
 M8127 communication request handshake signal
 M8128 error flag
 M8129 communication request switching
-???
+The next original annotation was unreadable.
 Dedicated data register description
 D8000 = 200; scan time
 D8001 = 0X5EF6; Model version FX2N(C)
@@ -25,8 +25,6 @@ D8011 = 20; scan minimum time (0.1MS)
 D8012 = 140; maximum scan time (0.1MS)
 D6030 D6031 D6032 D6033 is an analog input
 D8080 D8081 is the analog output
-
-
 
 D8120 = 0X4096 communication format
 D8121 slave number (up to 16)
@@ -80,7 +78,7 @@ Example: D8120 = 0X4096 Communication baud rate is 19200
 #include "stm32f10x_flash.h"
 #include <stdio.h>
 #include "PLC_Dialogue.h"
-#include "PLC_IO.h"
+#include "plc_io.h"
 #include "PLC_CONF.H"
 
 extern u32 PLC_BIT_TEST(u32 addr);
@@ -142,7 +140,7 @@ MAXSTEP / 1000,0x00, // 00 0x0000 -- SIZE IN STEP 16000
 0x00,0x00, // 88        --
 0x00,0x00, // 90        --
 
-0x0F,0x00, // 92 0x005C -- PROGRAM START  ЅбКшЦёБо
+0x0F,0x00, // 92 0x005C -- PROGRAM START  End instruction
 0xFF,0xFF, // 94
 0xFF,0xFF, // 96
 0xFF,0xFF, // 98
@@ -288,7 +286,6 @@ MAXSTEP / 1000, // D8102 - 16000 Steps
 0x0000   // D8129 - RS485 timeout
 };
 
-
 const char ASCII[16] = {0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0X41, 0X42, 0X43, 0X44, 0X45, 0X46};
 const char HEX[]={
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -312,7 +309,6 @@ static u8 UART_Sended = 1;
 static u8 data_size, bctrl0, bctrl1;
 u8  UART_SEND_READY;
 u8  PLC_UPDATE_PROG = 0;
-
 
 void PLC_DATA_INIT(void) {
 u32 temp;
@@ -351,28 +347,28 @@ u32 temp, temp1;
 }
 
 /***********************************************
-  єЇКэ№¦ДЬЈє¶ПµзКэѕЭ±ё·Э
+  Function: Back up data on power-off
 ***********************************************/
 void PLC_DATA_KEEP(void) {  
 u32 temp = 0, temp_addr; 
 
-  for ( temp_addr = Addr_D0000 + 1000; temp_addr < Addr_D0000 + 1900; temp_addr +=2 ) // ±ё·Э 400 D µҐФЄµЅ D500
+  for ( temp_addr = Addr_D0000 + 1000; temp_addr < Addr_D0000 + 1900; temp_addr +=2 ) // Back up 400 D registers starting at D500
     prog_write_buffer[temp] = PLC_16BIT(temp_addr), temp++;
 
-  for ( temp_addr = Addr_CVal + 200; temp_addr < Addr_CVal + 300; temp_addr +=2 ) // ±ё·Э 50 T  µҐФЄµЅ T100
+  for ( temp_addr = Addr_CVal + 200; temp_addr < Addr_CVal + 300; temp_addr +=2 ) // Back up 50 T registers starting at T100
     prog_write_buffer[temp] = PLC_16BIT(temp_addr), temp++;
 
-  for ( temp_addr = Addr_TVal + 200; temp_addr < Addr_TVal + 300; temp_addr +=2 ) // ±ё·Э 50 D Unit from C100
+  for ( temp_addr = Addr_TVal + 200; temp_addr < Addr_TVal + 300; temp_addr +=2 ) // Back up 50 D registers starting at C100
     prog_write_buffer[temp] = PLC_16BIT(temp_addr), temp++;
 
-  for ( temp_addr = 0x0040; temp_addr < 0x0080; temp_addr +=2 )      // ±ё·Э 512-M1023
+  for ( temp_addr = 0x0040; temp_addr < 0x0080; temp_addr +=2 )      // Back up M512-M1023
     prog_write_buffer[temp] = PLC_16BIT(temp_addr), temp++;
 
   write_block(10);
 }
 
 /***********************************************
-  єЇКэ№¦ДЬЈєЙПµзКэѕЭёґО»
+  Function: Restore data on power-on
 ***********************************************/
 void PLC_DATA_RECOVER(void) { 
 u32 temp = 0, temp_addr;
@@ -393,46 +389,18 @@ u32 temp = 0, temp_addr;
 }
 
 /*******************************************************************************
-єЇКэГыіЖ?PLC_Comm_Byte
-єЇКэ№¦ДЬЈєНЁРЕЧЦЅЪµШЦ·ЦШ¶ЁТеј°ЦґРР
-ИлїЪІОКэЈєCmdГьБо          
-іцїЪІОКэЈєУіЙдµДКµјКµШЦ·(16BITµШЦ·)
+Function name: PLC_Comm_Byte
+Function: Remap and process communication byte addresses
+Input parameter: Cmd command          
+Output parameter: Mapped physical address (16-bit address)
 ********************************************************************************/
-/*
-u16 PLC_Comm_Byte(u16 comm_add) {     
-  if      ( comm_add >= 0x4000 && comm_add <= 0x7E7F ) {return comm_add-0x2000;} //D0000-D7999 
-  else if ( comm_add >= 0x0280 && comm_add <= 0x02FC ) {return comm_add-0x0280;} //S000-S999 
-  else if ( comm_add >= 0x0240 && comm_add <= 0x0256 ) {return comm_add-0x01C0;} //X000-X277  
-  else if ( comm_add >= 0x0180 && comm_add <= 0x0196 ) {return comm_add-0x00E0;} //Y000-Y267 
-  else if ( comm_add >= 0x0200 && comm_add <= 0x021F ) {return comm_add-0x0140;} //T00-T255  OVERґҐµг
-  else if ( comm_add >= 0x0500 && comm_add <= 0x051F ) {return comm_add-0x0240;} //T00-T255  Enable ПЯИ¦
-  else if ( comm_add >= 0x01E0 && comm_add <= 0x01FF ) {return comm_add-0x0020;} //C00-C255  OVERґҐµг
-  else if (                       comm_add <= 0x00BF ) {return comm_add+0x0100;} //M0000-M1535 
-  else if ( comm_add >= 0x00C0 && comm_add <= 0x017F ) {return comm_add+0x0440;} //M1536-M3071
-  else if ( comm_add >= 0x01C0 && comm_add <= 0x01DF ) {return comm_add+0x0020;} //M8000-M8255 
-  else return comm_add;                                               //ОЮР§µШЦ·
-}
-*/
+
 /*******************************************************************************
-єЇКэГыіЖЈєPLC_Com_BIT
-єЇКэ№¦ДЬЈєНЁРЕО»µШЦ·ЦШ¶ЁТеј°ЦґРР
-ИлїЪІОКэЈєCmdГьБо          
-іцїЪІОКэЈєУіЙдµДКµјКµШЦ·(BITµШЦ·)
+Function name: PLC_Com_BIT
+Function: Remap and process communication bit addresses
+Input parameter: Cmd command          
+Output parameter: Mapped physical address (bit address)
 ********************************************************************************/
-/*
-u16 PLC_Com_BIT(u16 addr) {
-  if      ( ( addr <= 0x05FF ) )                       return (addr+0x0800); //M0000-M1535
-  else if ( ( addr >= 0x0600 ) && ( addr <= 0x0BFF ) ) return (addr+0x2200); //M1536-M3071
-  else if ( ( addr >= 0x0C00 ) && ( addr <= 0x0CB7 ) ) return (addr-0x0700); //Y00-Y267
-  else if ( ( addr >= 0x1200 ) && ( addr <= 0x12BF ) ) return (addr-0x0E00); //X00-X267  
-  else if ( ( addr >= 0x1400 ) && ( addr <= 0x17E7 ) ) return (addr-0X1400); //S00-S999  
-  else if ( ( addr >= 0x2800 ) && ( addr <= 0x28FF ) ) return (addr-0X1200); //T00-T255 Enable ПЯИ¦
-  else if ( ( addr >= 0x1000 ) && ( addr <= 0x10FF ) ) return (addr-0X0A00); //T00-T255 OVER   ґҐµг
-  else if ( ( addr >= 0x0E00 ) && ( addr <= 0x0EFF ) ) return (addr+0X0100); //M8000-M8255
-  else if ( ( addr >= 0x0F00 ) && ( addr <= 0x0FFF ) ) return (addr-0X0100); //C00-C255 OVERґҐµг
-  else return addr;
-}
-*/
 
 static u16 find_data(u32 addr,u32 find_data) {
 u8 find_ok;
@@ -477,91 +445,8 @@ u32 temp_sum,data_H,data_L;
   tx_count = 9;
 }
 
-/*
-void mov_flash(u16 addr,u8 mov_addr) {
-u16 start_addr,end_addr,backup_addr,temp,temp1,temp2,mov_byte,addr_mov; 
-static u8 offset;
-
-  offset = mov_addr;
-  end_addr = find_data(addr + 0x8000, 0x000f) + mov_addr - 0x8000; 
-  start_addr = end_addr;
-  addr_mov = addr;
-
-  if ( addr > 0x5B ) { 
-    addr_mov -= 0X5C;     
-    end_addr -= 0x5C;
-    addr_mov /= 2;       
-    end_addr /= 2;
-    addr_mov /= 8;         
-    end_addr /= 8;
-    offset /= 2;
-    mov_byte = offset/8;
-    offset %= 8;
-    while ( !( end_addr == addr_mov ) ) {
-      temp = step_status[end_addr] * 0x100 + step_status[end_addr - 1];   
-      temp <<= offset;   
-      step_status[end_addr + mov_byte] = temp / 0x100;      
-      end_addr--;               
-    }
-    temp = step_status[end_addr] * 0x100 + step_status[end_addr - 1];
-    temp <<= offset;   
-    step_status[end_addr + mov_byte] = temp / 0x100;      
-  }
-  end_addr = start_addr;   
-  temp = start_addr;
-  do {
-    if ( ( end_addr / 0x800 ) == ( addr / 0x800 ) )
-      start_addr = addr % 0x800;         
-    else
-      start_addr = 0;             
-    if ( ( temp / 0x800 ) == ( end_addr / 0x800 ) )
-      temp1 = end_addr % 0x800 + 1;
-    else
-      temp1 = 2048;
-    backup_block(end_addr / 0x800);
-    for ( temp2 = start_addr; temp2 < temp1 + 1; temp2++) {
-      backup_addr = ( end_addr / 0x800 ) * 0x800 + temp2 - mov_addr;
-//      prog_write_buffer[temp2] = p_x[backup_addr];
-    }
-    write_block(end_addr / 0x800);
-    end_addr -= (temp1 - start_addr);
-  } while ( end_addr > addr + mov_addr );
-}
-*/
 // ----------- !!!!!!!!!!!!!!!!!!!!!!!!!!!! ------------------
 // Write 8 bit in 16 bit registr
-/*
-void online_write_data(void) { 
-u16 temp;
-u8 temp1,temp2;
-
-  temp1 = tx_data[5];      
-  temp2 = tx_data[6];     
-  temp2 -= temp1;
-  if ( temp2 > 0 ) { 
-    mov_flash(prog_address - 0x8000, temp2);      
-  }
-  PLC_NEW_PROG = 0;                       
-  bctrl0 = 100;
-  bctrl1 = 100;
-  prog_address = (tx_data[3] * 0x100 + tx_data[4]) - 0x8000;
-  data_size = tx_data[6];
-  for ( temp = 0; temp < data_size; temp++ ) {
-    bctrl0 = (prog_address + temp) / 0x800;  
-    if ( bctrl0 == bctrl1 ) {
-      prog_write_buffer[(prog_address + temp) - bctrl0 * 0x800] = tx_data[7 + temp];  
-    } else {
-      write_block(bctrl1);   
-      backup_block(bctrl0);  
-      bctrl1 = bctrl0;
-      prog_write_buffer[(prog_address + temp) - bctrl0 * 0x800] = tx_data[7 + temp];
-    }
-  } 
-  write_block(bctrl0);   
-  tx_data[1] = 0x06;
-  tx_count = 1;
-}
-*/
 
 void UARTSend(void) {
 u32 temp;
@@ -585,7 +470,7 @@ u32 data;
 
 void Process_switch(void) {                                                                                                                      
 u32 temp;
-//u8 temp_sum;
+
 u8 data;
 
   for ( temp = 4; temp < (rx_count - 2); temp++ ) {
@@ -600,74 +485,35 @@ u8 data;
   data_size = tx_data[4];
 
   switch (rx_data[3]) { 
-    case 0x30: // PC_READ_byte();
+    case 0x30: 
       addr = RAM_ADDR + prog_address;
       UARTSend();
-/*
-      tx_data[1] = 0x02;
-      temp_sum = 0;
-      for ( temp = 0; temp < data_size; temp++ ) { 
-        data = PLC_8BIT(temp + prog_address);
-        tx_data[temp * 2 + 2] = ASCII[data / 0x10];
-        tx_data[temp * 2 + 3] = ASCII[data % 0x10];
-        temp_sum += tx_data[temp * 2 + 2] + tx_data[temp * 2 + 3];
-      }
-      tx_data[temp * 2 + 2] = 0x03;
-      temp_sum += 0x03;
-      tx_data[temp * 2 + 3] = ASCII[temp_sum / 0x10];
-      tx_data[temp * 2 + 4] = ASCII[temp_sum % 0x10]; 
-      tx_count = temp * 2 + 4;
-*/
+
       break;
 
-    case 0x31: // PC_WRITE_byte();
+    case 0x31: 
       for ( temp = 0; temp < data_size; temp++ ) {
         PLC_8BIT(temp + prog_address) = tx_data[5 + temp];
       }
       break;
 
-    case 0x34: //find_end();                        
+    case 0x34: 
       if ( rx_count == 14 ) {
-/*
-u8 temp_sum,data_H,data_L;                                    
 
-  data_L = tx_data[4];             //РиТЄІйХТКэѕЭµДДЪИЭµНО»  
-  data_H = tx_data[5];            //РиТЄІйХТКэѕЭµДДЪИЭёЯО»
-  data_address = find_data(prog_address, data_H * 0X100 + data_L);  //¶БFLASH
-  tx_data[1] = 0x02;              //±ЁОДїЄКј
-  temp_sum = 0;
-  tx_data[2] = 0x31;
-  temp_sum += tx_data[2];
-  data_H = data_address / 0x100;
-  data_L = data_address % 0x100;
-  tx_data[3] = ASCII[data_H / 0X10];
-  tx_data[4] = ASCII[data_H % 0X10];
-  tx_data[5] = ASCII[data_L / 0X10];
-  tx_data[6] = ASCII[data_L % 0X10];
-  tx_data[7] = 0X03;
-  temp_sum += tx_data[3];
-  temp_sum += tx_data[4];
-  temp_sum += tx_data[5];
-  temp_sum += tx_data[6];
-  temp_sum += tx_data[7];
-  tx_data[8] = ASCII[temp_sum / 0x10];
-  tx_data[9] = ASCII[temp_sum % 0x10]; 
-  tx_count = 9;
-*/
         tx_data[0]=0x06, tx_count=1;  
       } else
         tx_data[0]=0x06, tx_count=1; 
       break;
 
-    case 0x37: // PC_FORCE_ON();         
+    case 0x37: 
       PLC_BIT_ON(prog_address);
       break;
 
-    case 0x38: // PC_FORCE_OFF();        
+    case 0x38: 
       PLC_BIT_OFF(prog_address);
       break;
 
-    case 0x42: // all_flash_lock();
+    case 0x42: 
       write_block(bctrl1);
       bctrl1 = 255;
       bctrl0 = 255;
@@ -697,31 +543,31 @@ u8 temp_sum,data_H,data_L;
             u32 temp_bit,temp_addr,mov_bit,temp1;
             u32  monitor,monitor1,monitor2; 
 
-            if ( ( prog_address == 0x1790 ) || ( prog_address == 0x17D0 ) ) {          //ЗлЗу¶БјаїШКэѕЭЗш0X1790 Ул 0X17D0µШЦ·
+            if ( ( prog_address == 0x1790 ) || ( prog_address == 0x17D0 ) ) {          //Request to read monitoring data at addresses 0X1790 and 0X17D0
               if ( prog_address == 0x1790 ) {
-                monitor1 = PLC_8BIT(0x1400);                              //¶БіцРиТЄјаїШЧЦКэБї 0X1400/2=0XA00
-                for ( temp1 = monitor = 0; monitor < monitor1; monitor++ ) {       //¶БјаїШЧЦКэѕЭ
+                monitor1 = PLC_8BIT(0x1400);                              //Read the number of words to monitor 0X1400/2=0XA00
+                for ( temp1 = monitor = 0; monitor < monitor1; monitor++ ) {       //Read monitored word data
 //                  temp_bit = PLC_Comm_Byte(PLC_16BIT[0XA02 + monitor]) / 2;
                   temp_bit = PLC_16BIT(0x1404 + monitor * 2);
-                  PLC_16BIT(0x1790 + temp1 * 2) = PLC_16BIT(temp_bit);  //Ѕ«РиТЄµДКэѕЭґ«µЅ»єґж 0X1790/2=0XBC8
+                  PLC_16BIT(0x1790 + temp1 * 2) = PLC_16BIT(temp_bit);  //Copy the required data to the buffer 0X1790/2=0XBC8
                   temp1++;
-                  if ( ( temp_bit >= Addr_CHVal ) && ( temp_bit < Addr_CHVal + 56 * 2 ) ) {           //ЦчТЄКЗC200-C255ТФєуµДµШЦ·КЗ32О»µД 
-                    PLC_16BIT(0x1790 + temp1 * 2) = PLC_16BIT(temp_bit + 2);     //Ѕ«РиТЄµДКэѕЭґ«µЅ»єґж
+                  if ( ( temp_bit >= Addr_CHVal ) && ( temp_bit < Addr_CHVal + 56 * 2 ) ) {           //In particular, addresses for C200-C255 hold 32-bit values 
+                    PLC_16BIT(0x1790 + temp1 * 2) = PLC_16BIT(temp_bit + 2);     //Copy the required data to the buffer
                     temp1++;
                   }                      
                 }
-                monitor2 = PLC_8BIT(0x1402);                            //¶БіцРиТЄјаїШО»КэБї
-                for ( monitor1 = 0; monitor1 < monitor2; monitor1++ ) {         //¶БјаїШО»КэѕЭ
+                monitor2 = PLC_8BIT(0x1402);                            //Read the number of bits to monitor
+                for ( monitor1 = 0; monitor1 < monitor2; monitor1++ ) {         //Read monitored bit data
 //                  temp_addr = PLC_Com_BIT(PLC_16BIT[0XA02 + monitor + monitor1]);
                   temp_addr = PLC_16BIT(0x1404 + (monitor + monitor1) * 2);
 //                  temp_bit = PLC_16BIT[temp_addr / 0x10];
                   temp_bit = PLC_16BIT(temp_addr >> 4);
                   mov_bit = temp_addr & 0x0F;
                   if ( ( temp_bit & (1<<mov_bit) ) == ( 1 << mov_bit) )
-//                    PLC_16BIT[0xBC8 + temp1 + monitor1 / 0x10] |= 1<<(monitor1 % 0x10);//ґ®їЪ»єґжКэѕЭ
-                    PLC_16BIT(0x1790 + temp1 + (monitor1 >> 4)) |= 1 << (monitor1 & 0x0F);//ґ®їЪ»єґжКэѕЭ
+
+                    PLC_16BIT(0x1790 + temp1 + (monitor1 >> 4)) |= 1 << (monitor1 & 0x0F);//Serial-port buffer data
                   else
-//                    PLC_16BIT[0xBC8 + temp1 + monitor1 / 0x10] &= ~(1<<(monitor1 % 0x10));          
+
                     PLC_16BIT(0x1790 + temp1 + (monitor1 >> 4)) &= ~(1 << (monitor1 & 0x0F));
                 }
               }
@@ -779,7 +625,7 @@ u8 temp_sum,data_H,data_L;
 
           case 0x41: find_data_address(); break;
 
-          case 0x61: // all_flash_unlock();
+          case 0x61: 
             bctrl1 = 255;
             bctrl0 = 255;
           break;
@@ -817,31 +663,7 @@ u8 temp_sum,data_H,data_L;
             break;
 
 //          case 0xD1: online_write_data();  break;  
-/*
-          case 0x0F:
-// -- E0F -- Read comment ???? 
-            tx_data[1] = 0x02;
-            temp_sum = 0;
-            prog_address -= 0x8000;
-            for ( temp = 0; temp < data_size; temp++ ) { 
-              data = PLC_ROM_8BIT(temp + prog_address);
-              tx_data[temp * 2 + 2] = ASCII[data / 0x10];
-              tx_data[temp * 2 + 3] = ASCII[data % 0x10];
-              temp_sum += tx_data[temp * 2 + 2] + tx_data[temp * 2 + 3];
-            }
-            tx_data[temp * 2 + 2] = 0x03;
-            temp_sum += 0x03;
-            tx_data[temp * 2 + 3] = ASCII[temp_sum / 0x10];
-            tx_data[temp * 2 + 4] = ASCII[temp_sum % 0x10]; 
-            tx_count = temp * 2 + 4;
-            break;
 
-          case 0x1F:
-// -- E1F -- Write comment ???? 
-            tx_data[1] = 0x06;
-            tx_count = 1;
-            break;
-*/
           default:
             tx_data[0] = 0x15;
             tx_count = 1;
@@ -872,22 +694,16 @@ void usart(u16 DEFAULT_BAUD) {
 */
   USART1->BRR = SystemCoreClock/DEFAULT_BAUD;
   USART1->CR1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_UE | USART_CR1_RXNEIE;
-//  USART1->CR3 |= USART_CR3_DMAT;         //§в§С§Щ§в§Ц§к§Ъ§д§о §б§Ц§в§Ц§Х§С§й§е USART1 §й§Ц§в§Ц§Щ DMA
+
 }  
 
-//---------------------ґ®їЪ№¦ДЬЕдЦГ---------------------
+//---------------------Serial-port configuration---------------------
 void DMA1_Channel4_IRQHandler(void) {
-//  if (DMA1->ISR & DMA_ISR_TCIF4) {    //§б§в§а§У§Ц§в§Ъ§д§о §ж§Э§С§Ф §а§Ь§а§Я§й§С§Я§Ъ§с §а§Т§Ю§Ц§Я§С
+//  if (DMA1->ISR & DMA_ISR_TCIF4) {    //Check the transfer-complete flag
     DMA1->IFCR |= DMA1_FLAG_TC4;
     DMA1_Channel4->CCR &= 0xFFFE;
     UART_Sended = 1;
-/*  }
-  if (DMA1->ISR & DMA_ISR_HTIF4) {    //§б§в§а§У§Ц§в§Ъ§д§о §ж§Э§С§Ф §б§Ц§в§Ц§Х§С§й§Ъ §б§а§Э§а§У§Ъ§Я§н §Т§е§ж§Ц§в§С
-    DMA1->IFCR |= DMA_ISR_HTIF4;      //§а§й§Ъ§г§д§Ъ§д§о §ж§Э§С§Ф §б§Ц§в§Ц§Х§С§й§Ъ §б§а§Э§а§У§Ъ§Я§н §Т§е§ж§Ц§в§С
-  }
-  if (DMA1->ISR & DMA_ISR_TEIF4) {    //§б§в§а§У§Ц§в§Ъ§д§о §ж§Э§С§Ф §а§к§Ъ§Т§Ь§Ъ §а§Т§Ю§Ц§Я§С
-    DMA1->IFCR |= DMA_ISR_TEIF4;      //§а§й§Ъ§г§д§Ъ§д§о §ж§Э§С§Ф §а§к§Ъ§Т§Ь§Ъ §а§Т§Ю§Ц§Я§С
-  }*/
+
 }
 
 void TX_Process(void) {
@@ -908,27 +724,25 @@ u32 temp;
     goto send_ok;
 
 //    rx_count = 0;
-//    tx_data[1] = 0x06;
+
 //    tx_count = 1;
-//    TX_Process();
+
   } else if ( rx_data[0] == 0X02 ) {
     rx_count = 0x01;
   } else if ( rx_count == 0 ) {
     if ( f == 1 ) {
       usart(19200);
-//      USART1->BRR  = 0x0EA6; //SystemCoreClock/19200;
-//      USART1->CR1  = USART_CR1_RE | USART_CR1_TE | USART_CR1_UE | USART_CR1_RXNEIE;
+
       f = 0;
 
       goto send_ok;
 //      rx_count = 0;
-//      tx_data[1] = 0x06;
+
 //      tx_count = 1;
-//      TX_Process();
+
     } else if ( f == 0 ) {
       usart(9600);
-//      USART1->BRR  = 0x1D4C; //SystemCoreClock/9600;
-//      USART1->CR1  = USART_CR1_RE | USART_CR1_TE | USART_CR1_UE | USART_CR1_RXNEIE;
+
       f = 1;
 send_ok:
       rx_count = 0;
@@ -953,7 +767,7 @@ send_ok:
       temp = (HEX[rx_data[rx_count - 1]] << 4) + HEX[rx_data[rx_count]];
       if ( ( sum & 0xFF ) == temp ) {
         Process_switch(); 
-//        TX_Process();
+
       } else {
         rx_count = 0;
         tx_data[0] = 0x15;

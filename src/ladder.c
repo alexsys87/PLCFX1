@@ -1,38 +1,36 @@
 /********************************************************/
-// CPU需要：STM32F103--RAM内存不小于64K  Flash内存不小于128K
-// 本代码已在STM32F103RDT6、VET6测试通过
-// 编辑日期：20150909
-// editor by 小小晟
-// 网店：shop182385147.taobao.com
+// CPU requirements: STM32F103 -- at least 64K RAM and 128K Flash
+// This code has been tested successfully on STM32F103RDT6 and VET6
+// Edited: 20150909
+// editor by Xiao Xiao Sheng
+// Online store: shop182385147.taobao.com
 /********************************************************/
 
 #include "stm32f10x.h"
 #include <stdio.h>
-#include "PLC_IO.h"
+#include "plc_io.h"
 #include "PLC_Dialogue.h"
-#include "math.h"          //数学函数库 
-//#include "Gray.h"          //格雷码转换库
+#include "math.h"          //Mathematical function library 
+
 #include "PLC_CONF.H"
 
 //extern unsigned char Y0P,Y1P;                //
-//extern unsigned short Plus_CMP0,Plus_CMP1;   //脉冲标志位
-extern u8  X_DIY;                             //滤波时间
-extern u16 PLC_RUN_TIME;                     //扫描时间
+//extern unsigned short Plus_CMP0,Plus_CMP1;   //Pulse flag bits
+extern u8  X_DIY;                             //Filter time
+extern u16 PLC_RUN_TIME;                     //Scan time
 extern u8 PLC_UPDATE_PROG;
-extern void RTC_Set(u16 syear,u8 smon,u8 sday,u8 hour,u8 min,u8 sec);//时间修改程序
-extern void PLC_IO_Refresh(void);            //IO刷新输出程序
-//extern u8  Step_Address[MAXSTEP];        //为PLS OR PLF use  
+extern void RTC_Set(u16 syear,u8 smon,u8 sday,u8 hour,u8 min,u8 sec);//Time-setting routine
+extern void PLC_IO_Refresh(void);            //I/O output refresh routine
 
 static u8 PLC_ACC_BIT; // @ (RAM_ACC_ADDR);
-static u8 PLC_MPS_BIT; //程序执行专用(运算栈及分线栈)
+static u8 PLC_MPS_BIT; //Reserved for program execution (operation stack and branch stack)
 static u8 PLC_RUN_FLAG; 
-static const u16 *PLC_PC;                  //PLC程序指针
-static const u16 *PLC_Err;                   //PLC出错步
-static u32 mov_d_addr;                       //K?M&Y&S&X指令缓存
-static const u16 *PLC_P_Addr[128];           //方便调子程序取指针
-static const u16 *p_save[64];               //调子程序时保存上一个执行点位
-u16 process[64];                             //调子程序时保存上一个子程序值
-//u8  Step_Address[MAXSTEP / 8]; // __at (RAM_ADDR + 0x6400);
+static const u16 *PLC_PC;                  //PLC program pointer
+static const u16 *PLC_Err;                   //PLC error step
+static u32 mov_d_addr;                       //K-group M/Y/S/X instruction buffer
+static const u16 *PLC_P_Addr[128];           //Pointers for subroutine calls
+static const u16 *p_save[64];               //Save the previous execution position on a subroutine call
+u16 process[64];                             //Save the previous subroutine value on a subroutine call
 
 #define USE_COMPARE_MOVE
 #define USE_TIME
@@ -51,11 +49,11 @@ u16 CMD_CMD;
 
 u8  PLC_PULS;
 u8  PLC_PRG_STOP = 0;
-u8  PLC_NEW_PROG;                        //从新编程缓存寄存器
+u8  PLC_NEW_PROG;                        //Reprogramming buffer register
 
-u8  Flag_bit = 0xff, bitT_put, bitT_get; //其实就是k的标志位  减小函数的量，减轻CPU负担     
-u32 value;                               //作用于加减法，减小函数的量，减轻CPU负担     
-u32 Transfer = 0;                        //作用多地传递和成批传递 减小函数的量，减轻CPU负担  
+u8  Flag_bit = 0xff, bitT_put, bitT_get; //K-value flag; reduces function overhead and CPU load     
+u32 value;                               //Used for addition and subtraction; reduces function overhead and CPU load     
+u32 Transfer = 0;                        //Used for multi-point and block transfers; reduces function overhead and CPU load  
 
 float_union FLOAT;
 u64_union   u64d; //,u64d2;
@@ -305,7 +303,7 @@ void WEAK DOR_LEQ(void);
 void WEAK OR_GEQ(void);
 void WEAK DOR_GEQ(void);
 
-//таблица :
+//Table :
 void (* const FUNC_BASIC[])(void) = {
   FUNC_0,   FUNC_0,   LD,       LDI,      AND,      ANI,      OR,       ORI,
   ERR,      ERR,      ERR,      NOP,      OUT,      BSET,     RST,      FUNC_F
@@ -423,24 +421,19 @@ void (* const FUNC_EXT_0[])(void) = {
      
 /***************************************************FOR**************************************************/
 struct {
-  const u16 *Addr[7];  //FOR 地址记录
-  u16 cycle[7];        //当前循环的次数
-  u16 count[7];        //目标循环的次数
-  u8  point;           //for指向的点数  
+  const u16 *Addr[7];  //FOR address records
+  u16 cycle[7];        //Current loop iteration count
+  u16 count[7];        //Target loop iteration count
+  u8  point;           //FOR stack position  
 } FOR_CMD;
 
 /***************************************************STL**************************************************/
-static u32 PLC_STL_Addr;    //STL指令地址号
-static u8  PLC_STL_Status;    //STL指令当前状态 0整套程序没有STL状态，程序1为STL有状态，2为STL停止状态 
-static u8  PLC_STL_CMD;      //STL标志
-static u8  PLC_STL_Count;     //计数线圈数量
-static u16 PLC_STL_Coil[256]; //线圈缓存寄存器
+static u32 PLC_STL_Addr;    //STL instruction address number
+static u8  PLC_STL_Status;    //Current STL instruction state: 0 = no STL state in the program; 1 = STL active; 2 = STL stopped 
+static u8  PLC_STL_CMD;      //STL flag
+static u8  PLC_STL_Count;     //Number of counted coils
+static u16 PLC_STL_Coil[256]; //Coil buffer register
 /********************************************************************************************************/
-//#define PLC_PL_BIT_ON(x)   ( Step_Address[(x)/8] |= PLC_BIT_OR[(x)%8] ) //写状态值为1     上升延与下降沿使用
-//#define PLC_PL_BIT_OFF(x)  ( Step_Address[(x)/8] &= PLC_BIT_AND[(x)%8] )//写步状态为0上升延与下降沿使用共2K字节1600bit
-//#define PLC_PL_BIT_TEST(x) ( Step_Address[(x)/8] &  PLC_BIT_OR[(x)%8] )
-//#define PLC_LD_BIT(x)      ( PLC_Bu(RAM_ADDR + ((x) / 8)) & PLC_BIT_OR[(x) % 8] )
-//#define PLC_LD_BIT(x)      (BB_SRAM( (SRAM_ADDR + ( (x) >> 3 )), ((x) & 7)) )
 
 u32 PLC_LD_BIT(u32 addr) {
   return PLC_BIT_TEST1(addr);
@@ -485,30 +478,30 @@ u8 PLC_LDP_TEST(void) {
 }
 
 /*********************************************
-?? Function: PLC code error handler
-?? Err_id = 01: Instruction error (unrecognized instruction)
-?? Err_id = 02: Instruction error (not supporting command)
-?? Err_id = 10: Data error (data type not recognized)
-?? Err_id = 11: Data error (data read address is exceeded)
-?? Err_id = 12: Data error (index Z address unknown)
-?? Err_id = 13: Data error (indexed Z address exceeded)
-?? Err_id = 20: CJ instruction address error
-?? D8061, M8061 = PC hardware error
-?? D8063, M8063 = Link, communication error
-?? D8064, M8064 = Parameter error
-?? D8065, M8065 = Syntax error
-?? D8066, M8066 = Circuit error
-?? D8067, M8067 = Operation error
-?? D8068, M8068 = Operation error latch
+* Function: PLC code error handler
+* Err_id = 01: Instruction error (unrecognized instruction)
+* Err_id = 02: Instruction error (not supporting command)
+* Err_id = 10: Data error (data type not recognized)
+* Err_id = 11: Data error (data read address is exceeded)
+* Err_id = 12: Data error (index Z address unknown)
+* Err_id = 13: Data error (indexed Z address exceeded)
+* Err_id = 20: CJ instruction address error
+* D8061, M8061 = PC hardware error
+* D8063, M8063 = Link, communication error
+* D8064, M8064 = Parameter error
+* D8065, M8065 = Syntax error
+* D8066, M8066 = Circuit error
+* D8067, M8067 = Operation error
+* D8068, M8068 = Operation error latch
 ***********************************************/
 void PLC_PROG_ERROR(u16 err,u16 err_id) {
   ERR_LED_ON;  
-// PLC_BIT_ON(err);                              //出错标志  小小晟 屏蔽
-  D8012 = 0;                                       //扫描时间
+
+  D8012 = 0;                                       //Scan time
   if ( D8068 == 0 ) {
-    D8067 = err_id;                      //语法错误
+    D8067 = err_id;                      //Syntax error
 //  if ( D8068 == 0 )
-    D8068 = PLC_Err - PLC_START_ADDR; //保存出错PC步
+    D8068 = PLC_Err - PLC_START_ADDR; //Save the program-counter step at the error
   }
   D8069 = D8068;
 }
@@ -583,41 +576,40 @@ u32 temp, temp1;
 //=======================================================================================================
 //=======================================================================================================
  
-void MOV_TO_K_H(u8 i, u32 data, u32 addr) { //进行 MOV ?? K?X&Y&S&M 地址计算
-u32 LL_BIT;                         //需要向左移动多少位用寄存器
+void MOV_TO_K_H(u8 i, u32 data, u32 addr) { //Calculate the address for MOV to K-group X/Y/S/M devices
+u32 LL_BIT;                         //Register holding the number of bits to shift left
 u32 tempAddr;
-int64_t tempData,tempData1,tempData2;  //移动32位数据
+int64_t tempData,tempData1,tempData2;  //Shift 32-bit data
 
   mov_d_addr |= addr << 8; 
-  mov_d_addr += Transfer;                      //成批传递和多点时 Transfer会有数据平时都是0
-  LL_BIT = mov_d_addr % 0x20;                     //需要移动多少位
-  tempAddr = (mov_d_addr / 0x20) * 4;              //所在的起始地址  
-  switch(i) {            //    移动位数　需要的数据做好处理            将数据移动需要的位数       后面要将数据取反用
-    case 0x82: tempData1 = data & 0x0000000F; tempData1 <<= LL_BIT; tempData2 = ~(0x0000000F << LL_BIT); break;//传送K1大小
-    case 0x84: tempData1 = data & 0x000000FF; tempData1 <<= LL_BIT; tempData2 = ~(0x000000FF << LL_BIT); break;//传送K2大小
-    case 0x86: tempData1 = data & 0x00000FFF; tempData1 <<= LL_BIT; tempData2 = ~(0x00000FFF << LL_BIT); break;//传送K3大小
-    case 0x88: tempData1 = data & 0x0000FFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x0000FFFF << LL_BIT); break;//传送K4大小
-    case 0x8A: tempData1 = data & 0x000FFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x000FFFFF << LL_BIT); break;//传送K5大小
-    case 0x8C: tempData1 = data & 0x00FFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x00FFFFFF << LL_BIT); break;//传送K6大小
-    case 0x8E: tempData1 = data & 0x0FFFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x0FFFFFFF << LL_BIT); break;//传送K7大小
-    case 0x90: tempData1 = data & 0XFFFFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0XFFFFFFFF << LL_BIT); break;//传送K8大小
-    default: PLC_PC += 3; break;  //遇到不支持的命令
+  mov_d_addr += Transfer;                      //Transfer holds an offset for block and multi-point transfers; otherwise it is 0
+  LL_BIT = mov_d_addr % 0x20;                     //Number of bits to shift
+  tempAddr = (mov_d_addr / 0x20) * 4;              //Starting address  
+  switch(i) {            //    Select the bit width, prepare the data, shift it into position, and form the inverted mask for later use
+    case 0x82: tempData1 = data & 0x0000000F; tempData1 <<= LL_BIT; tempData2 = ~(0x0000000F << LL_BIT); break;//Transfer K1-width data
+    case 0x84: tempData1 = data & 0x000000FF; tempData1 <<= LL_BIT; tempData2 = ~(0x000000FF << LL_BIT); break;//Transfer K2-width data
+    case 0x86: tempData1 = data & 0x00000FFF; tempData1 <<= LL_BIT; tempData2 = ~(0x00000FFF << LL_BIT); break;//Transfer K3-width data
+    case 0x88: tempData1 = data & 0x0000FFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x0000FFFF << LL_BIT); break;//Transfer K4-width data
+    case 0x8A: tempData1 = data & 0x000FFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x000FFFFF << LL_BIT); break;//Transfer K5-width data
+    case 0x8C: tempData1 = data & 0x00FFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x00FFFFFF << LL_BIT); break;//Transfer K6-width data
+    case 0x8E: tempData1 = data & 0x0FFFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x0FFFFFFF << LL_BIT); break;//Transfer K7-width data
+    case 0x90: tempData1 = data & 0XFFFFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0XFFFFFFFF << LL_BIT); break;//Transfer K8-width data
+    default: PLC_PC += 3; break;  //Unsupported instruction encountered
   }                                          
   tempData  = PLC_Du(RAM_ADDR + tempAddr);
-  tempData &= tempData2;             //将需要传送的位置清空 
-  tempData |= tempData1;        //传入需要到的位置   
-  PLC_Du(RAM_ADDR + tempAddr) = tempData;  //将数据传到目标位置
+  tempData &= tempData2;             //Clear the destination bits 
+  tempData |= tempData1;        //Insert the data at the required position   
+  PLC_Du(RAM_ADDR + tempAddr) = tempData;  //Transfer the data to the destination
 }
- 
 
-signed int MOV_K(void) {               //进行K?X&Y&S&M计算
-u32 LL_BIT, tempAddr;                   //需要向左移动多少位用寄存器
-uint64_t tempData;               //移动64位数据
+signed int MOV_K(void) {               //Calculate the K-group X/Y/S/M value
+u32 LL_BIT, tempAddr;                   //Register holding the number of bits to shift left
+uint64_t tempData;               //Shift 64-bit data
 
 //  mov_d_addr |= Addr << 8;                    
-  mov_d_addr += Transfer;                         //成批传递和多点时 Transfer会有数据平时都是0
-  LL_BIT = mov_d_addr & 0x1F;                        //需要移动多少位
-  tempAddr = (mov_d_addr >> 5) << 2;                 //所在的起始地址                 
+  mov_d_addr += Transfer;                         //Transfer holds an offset for block and multi-point transfers; otherwise it is 0
+  LL_BIT = mov_d_addr & 0x1F;                        //Number of bits to shift
+  tempAddr = (mov_d_addr >> 5) << 2;                 //Starting address                 
   tempData = PLC_Du(RAM_ADDR + tempAddr),
   tempData >>= LL_BIT;                    
   return (signed int)tempData;
@@ -639,20 +631,20 @@ u32 type_of, temp1, temp2;
   mov_d_addr = ( (temp2 & 0x00FF) << 8 ) | (temp1 & 0xFF);
   temp2 = mov_d_addr << 1;
 
-  if      ( type_of == 0x8680 ) {temp = RAM_D8000_ADDR + temp2;            } //算出D的地址 D8000
-  else if ( type_of == 0x8682 ) {temp = RAM_T_ADDR + temp2;                } //算出T的地址 
-  else if ( type_of == 0x8684 ) {temp = RAM_C_ADDR + temp2;                } //算出C的地址
-  else if ( type_of == 0x8686 ) {temp = RAM_D0000_ADDR + temp2;            } //算出D的地址 
-  else if ( type_of == 0x8688 ) {temp = RAM_D1000_ADDR + temp2;            } //大于等于D1000
+  if      ( type_of == 0x8680 ) {temp = RAM_D8000_ADDR + temp2;            } //Calculate the D address D8000
+  else if ( type_of == 0x8682 ) {temp = RAM_T_ADDR + temp2;                } //Calculate the T address 
+  else if ( type_of == 0x8684 ) {temp = RAM_C_ADDR + temp2;                } //Calculate the C address
+  else if ( type_of == 0x8686 ) {temp = RAM_D0000_ADDR + temp2;            } //Calculate the D address 
+  else if ( type_of == 0x8688 ) {temp = RAM_D1000_ADDR + temp2;            } //D1000 and above
 
-  else if ( type_of == 0x8482 ) {temp = MOV_K() & 0x0000000F; Flag_bit = 0;} //进行如 K4M0 之类的传送    
-  else if ( type_of == 0x8484 ) {temp = MOV_K() & 0x000000FF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
-  else if ( type_of == 0x8486 ) {temp = MOV_K() & 0x00000FFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
-  else if ( type_of == 0x8488 ) {temp = MOV_K() & 0x0000FFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
-  else if ( type_of == 0x848A ) {temp = MOV_K() & 0x000FFFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
-  else if ( type_of == 0x848C ) {temp = MOV_K() & 0x00FFFFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
-  else if ( type_of == 0x848E ) {temp = MOV_K() & 0x0FFFFFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
-  else if ( type_of == 0x8490 ) {temp = MOV_K();              Flag_bit = 0;} //进行如 K4M0 之类的传送  
+  else if ( type_of == 0x8482 ) {temp = MOV_K() & 0x0000000F; Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0    
+  else if ( type_of == 0x8484 ) {temp = MOV_K() & 0x000000FF; Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0    
+  else if ( type_of == 0x8486 ) {temp = MOV_K() & 0x00000FFF; Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0    
+  else if ( type_of == 0x8488 ) {temp = MOV_K() & 0x0000FFFF; Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0    
+  else if ( type_of == 0x848A ) {temp = MOV_K() & 0x000FFFFF; Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0    
+  else if ( type_of == 0x848C ) {temp = MOV_K() & 0x00FFFFFF; Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0    
+  else if ( type_of == 0x848E ) {temp = MOV_K() & 0x0FFFFFFF; Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0    
+  else if ( type_of == 0x8490 ) {temp = MOV_K();              Flag_bit = 0;} //Transfer grouped bit-device values such as K4M0  
   PLC_PC++;
   return temp;
 }
@@ -660,7 +652,6 @@ u32 type_of, temp1, temp2;
 //// -- V0 = 00xxxxxx V1 = 01xxxxxx V2 = 10xxxxxx V3 = 11xxxxxx
 
 u16 V0_V3(u16 temp) {
-//u32 temp = PLC_v_z_addr(temp1);
 
   if      ( temp == 0 ) return D8029;
   else if ( temp == 1 ) return D8183;
@@ -670,7 +661,6 @@ u16 V0_V3(u16 temp) {
 }
 
 u16 V4_V7(u16 temp) {
-//u32 temp = PLC_v_z_addr(temp1);
 
   if      ( temp == 0 ) return D8189;
   else if ( temp == 1 ) return D8191;
@@ -680,7 +670,6 @@ u16 V4_V7(u16 temp) {
 }
 
 u16 Z0_Z3(u16 temp) {
-//u32 temp = PLC_v_z_addr(temp1);
 
   if      ( temp == 0 ) return D8028;
   else if ( temp == 1 ) return D8182;
@@ -690,7 +679,6 @@ u16 Z0_Z3(u16 temp) {
 }
 
 u16 Z4_Z7(u16 temp) {
-//u32 temp = PLC_v_z_addr(temp1);
 
   if      ( temp == 0 ) return D8188;
   else if ( temp == 1 ) return D8190;
@@ -700,7 +688,6 @@ u16 Z4_Z7(u16 temp) {
 }
 
 u32 DZ0_Z3(u16 temp) {
-//u32 temp = PLC_v_z_addr(temp1);
 
   if      ( temp == 0 ) return (D8029 << 16) + D8028;
   else if ( temp == 1 ) return (D8183 << 16) + D8182;
@@ -710,7 +697,6 @@ u32 DZ0_Z3(u16 temp) {
 }
 
 u32 DZ4_Z7(u16 temp) {
-//u32 temp = PLC_v_z_addr(temp1);
 
   if      ( temp == 0 ) return (D8189 << 16) + D8188;
   else if ( temp == 1 ) return (D8191 << 16) + D8190;
@@ -740,99 +726,99 @@ u32 type_of, temp1, temp2, temp3, temp4;
   temp4 = PLC_D_C_T_addr(temp2) >> 8;
 
   switch(type_of) {
-    case  0x8080: temp = temp2; break;  //算出K值
-    case  0x8280: temp = temp2; break;  //算出H值
+    case  0x8080: temp = temp2; break;  //Calculate the K value
+    case  0x8280: temp = temp2; break;  //Calculate the H value
 
-    case  0x8482: temp = MOV_K()&0x0000000F; bitT_get = 1; break; //进行如 K4M0 之类的传送    
-    case  0x8484: temp = MOV_K()&0x000000FF; bitT_get = 1; break; //进行如 K4M0 之类的传送    
-    case  0x8486: temp = MOV_K()&0x00000FFF; bitT_get = 1; break; //进行如 K4M0 之类的传送    
-    case  0x8488: temp = MOV_K()&0x0000FFFF; bitT_get = 1; break; //进行如 K4M0 之类的传送      
+    case  0x8482: temp = MOV_K()&0x0000000F; bitT_get = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8484: temp = MOV_K()&0x000000FF; bitT_get = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8486: temp = MOV_K()&0x00000FFF; bitT_get = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8488: temp = MOV_K()&0x0000FFFF; bitT_get = 1; break; //Transfer grouped bit-device values such as K4M0      
 
-    case  0x8680: temp = PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ); break; //算出D的地址 D8000
-    case  0x8682: temp = PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ); break; //算出T的地址 
-    case  0x8684: temp = PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ); break; //算出C的地址
-    case  0x8686: temp = PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ); break; //算出D的地址 
-    case  0x8688: temp = PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ); break; //大于等于D1000
-    /************************************************K寄存器"V"*******************************************************************/
-    case  0x9080: temp = temp2 + D8029; break; //算出K的地址，的V0
-    case  0x9081: temp = temp2 + D8183; break; //算出K的地址，的V1
-    case  0x9082: temp = temp2 + D8185; break; //算出K的地址，的V2
-    case  0x9083: temp = temp2 + D8187; break; //算出K的地址，的V3
-    case  0x9084: temp = temp2 + D8189; break; //算出K的地址，的V4
-    case  0x9085: temp = temp2 + D8191; break; //算出K的地址，的V5
-    case  0x9086: temp = temp2 + D8193; break; //算出K的地址，的V6
-    case  0x9087: temp = temp2 + D8195; break; //算出K的地址，的V7
+    case  0x8680: temp = PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ); break; //Calculate the D address D8000
+    case  0x8682: temp = PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ); break; //Calculate the T address 
+    case  0x8684: temp = PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ); break; //Calculate the C address
+    case  0x8686: temp = PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ); break; //Calculate the D address 
+    case  0x8688: temp = PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ); break; //D1000 and above
+    /************************************************K register: V indexing*******************************************************************/
+    case  0x9080: temp = temp2 + D8029; break; //Calculate the K address with V0 indexing
+    case  0x9081: temp = temp2 + D8183; break; //Calculate the K address with V1 indexing
+    case  0x9082: temp = temp2 + D8185; break; //Calculate the K address with V2 indexing
+    case  0x9083: temp = temp2 + D8187; break; //Calculate the K address with V3 indexing
+    case  0x9084: temp = temp2 + D8189; break; //Calculate the K address with V4 indexing
+    case  0x9085: temp = temp2 + D8191; break; //Calculate the K address with V5 indexing
+    case  0x9086: temp = temp2 + D8193; break; //Calculate the K address with V6 indexing
+    case  0x9087: temp = temp2 + D8195; break; //Calculate the K address with V7 indexing
 
-    case  0x9280: temp = temp2 + D8029; break; //算出H的地址，的V0
-    case  0x9281: temp = temp2 + D8183; break; //算出H的地址，的V1
-    case  0x9282: temp = temp2 + D8185; break; //算出H的地址，的V2
-    case  0x9283: temp = temp2 + D8187; break; //算出H的地址，的V3
-    case  0x9284: temp = temp2 + D8189; break; //算出H的地址，的V4
-    case  0x9285: temp = temp2 + D8191; break; //算出H的地址，的V5
-    case  0x9286: temp = temp2 + D8193; break; //算出H的地址，的V6
-    case  0x9287: temp = temp2 + D8195; break; //算出H的地址，的V7   
-    /************************************************K1M0寄存器"V"*******************************************************************/
-    case  0x9482: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V0-V3  
-    case  0x9483: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V4-V7  
-    /************************************************K2M0寄存器"V"*******************************************************************/
-    case  0x9484: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V0-V3  
-    case  0x9485: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V4-V7    
-    /***********************************3************K3M0寄存器"V"*******************************************************************/
-    case  0x9486: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V0-V3  
-    case  0x9487: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V4-V7    
-    /************************************************K4M0寄存器"V"*******************************************************************/
-    case  0x9488: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V0-V3  
-    case  0x9489: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V4-V7            
+    case  0x9280: temp = temp2 + D8029; break; //Calculate the H address with V0 indexing
+    case  0x9281: temp = temp2 + D8183; break; //Calculate the H address with V1 indexing
+    case  0x9282: temp = temp2 + D8185; break; //Calculate the H address with V2 indexing
+    case  0x9283: temp = temp2 + D8187; break; //Calculate the H address with V3 indexing
+    case  0x9284: temp = temp2 + D8189; break; //Calculate the H address with V4 indexing
+    case  0x9285: temp = temp2 + D8191; break; //Calculate the H address with V5 indexing
+    case  0x9286: temp = temp2 + D8193; break; //Calculate the H address with V6 indexing
+    case  0x9287: temp = temp2 + D8195; break; //Calculate the H address with V7 indexing   
+    /************************************************K1M0 register: V indexing*******************************************************************/
+    case  0x9482: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x0000000F;break;//K1M0 with V0-V3 indexing  
+    case  0x9483: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x0000000F;break;//K1M0 with V4-V7 indexing  
+    /************************************************K2M0 register: V indexing*******************************************************************/
+    case  0x9484: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x000000FF;break;//K2M0 with V0-V3 indexing  
+    case  0x9485: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x000000FF;break;//K2M0 with V4-V7 indexing    
+    /***********************************3************K3M0 register: V indexing*******************************************************************/
+    case  0x9486: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0 with V0-V3 indexing  
+    case  0x9487: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0 with V4-V7 indexing    
+    /************************************************K4M0 register: V indexing*******************************************************************/
+    case  0x9488: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0 with V0-V3 indexing  
+    case  0x9489: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0 with V4-V7 indexing            
 
-    case  0x9682: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//算出T的地址，的V0-V3
-    case  0x9683: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//算出T的地址，的V4-V7
-    case  0x9684: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//算出C的地址，的V0-V3
-    case  0x9685: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//算出C的地址，的V4-V7
+    case  0x9682: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//Calculate the T address with V0-V3 indexing
+    case  0x9683: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//Calculate the T address with V4-V7 indexing
+    case  0x9684: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//Calculate the C address with V0-V3 indexing
+    case  0x9685: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//Calculate the C address with V4-V7 indexing
 
-    case  0x9686: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//算出D的地址，的V0-V3
-    case  0x9687: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//算出D的地址，的V4-V7
-    case  0x9688: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//大于等于D1000的V0-V3
-    case  0x9689: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//大于等于D1000的V4-V7
+    case  0x9686: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//Calculate the D address with V0-V3 indexing
+    case  0x9687: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//Calculate the D address with V4-V7 indexing
+    case  0x9688: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//D1000 and above with V0-V3 indexing
+    case  0x9689: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//D1000 and above with V4-V7 indexing
   
-    case  0xA080: temp = temp2 + D8028; break; //算出K的地址，的Z0
-    case  0xA081: temp = temp2 + D8182; break; //算出K的地址，的Z1
-    case  0xA082: temp = temp2 + D8184; break; //算出K的地址，的Z2
-    case  0xA083: temp = temp2 + D8186; break; //算出K的地址，的Z3
-    case  0xA084: temp = temp2 + D8188; break; //算出K的地址，的Z4
-    case  0xA085: temp = temp2 + D8190; break; //算出K的地址，的Z5
-    case  0xA086: temp = temp2 + D8192; break; //算出K的地址，的Z6
-    case  0xA087: temp = temp2 + D8194; break; //算出K的地址，的Z7   
+    case  0xA080: temp = temp2 + D8028; break; //Calculate the K address with Z0 indexing
+    case  0xA081: temp = temp2 + D8182; break; //Calculate the K address with Z1 indexing
+    case  0xA082: temp = temp2 + D8184; break; //Calculate the K address with Z2 indexing
+    case  0xA083: temp = temp2 + D8186; break; //Calculate the K address with Z3 indexing
+    case  0xA084: temp = temp2 + D8188; break; //Calculate the K address with Z4 indexing
+    case  0xA085: temp = temp2 + D8190; break; //Calculate the K address with Z5 indexing
+    case  0xA086: temp = temp2 + D8192; break; //Calculate the K address with Z6 indexing
+    case  0xA087: temp = temp2 + D8194; break; //Calculate the K address with Z7 indexing   
 
-    case  0xA280: temp = temp2 + D8028; break; //算出H的地址，的Z0
-    case  0xA281: temp = temp2 + D8182; break; //算出H的地址，的Z1
-    case  0xA282: temp = temp2 + D8184; break; //算出H的地址，的Z2
-    case  0xA283: temp = temp2 + D8186; break; //算出H的地址，的Z3
-    case  0xA284: temp = temp2 + D8188; break; //算出H的地址，的Z4
-    case  0xA285: temp = temp2 + D8190; break; //算出H的地址，的Z5
-    case  0xA286: temp = temp2 + D8192; break; //算出H的地址，的Z6
-    case  0xA287: temp = temp2 + D8194; break; //算出H的地址，的Z7   
-    /************************************************K1M0寄存器"Z"*******************************************************************/
-    case  0xA482: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V0-V3  
-    case  0xA483: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V4-V7  
-    /************************************************K2M0寄存器"Z"*******************************************************************/
-    case  0xA484: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V0-V3  
-    case  0xA485: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V4-V7    
-    /************************************************K3M0寄存器"Z"*******************************************************************/
-    case  0xA486: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V0-V3  
-    case  0xA487: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V4-V7    
-    /************************************************K4M0寄存Z"*******************************************************************/
-    case  0xA488: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V0-V3
-    case  0xA489: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V4-V7    
+    case  0xA280: temp = temp2 + D8028; break; //Calculate the H address with Z0 indexing
+    case  0xA281: temp = temp2 + D8182; break; //Calculate the H address with Z1 indexing
+    case  0xA282: temp = temp2 + D8184; break; //Calculate the H address with Z2 indexing
+    case  0xA283: temp = temp2 + D8186; break; //Calculate the H address with Z3 indexing
+    case  0xA284: temp = temp2 + D8188; break; //Calculate the H address with Z4 indexing
+    case  0xA285: temp = temp2 + D8190; break; //Calculate the H address with Z5 indexing
+    case  0xA286: temp = temp2 + D8192; break; //Calculate the H address with Z6 indexing
+    case  0xA287: temp = temp2 + D8194; break; //Calculate the H address with Z7 indexing   
+    /************************************************K1M0 register: Z indexing*******************************************************************/
+    case  0xA482: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x0000000F;break;//K1M0 with V0-V3 indexing  
+    case  0xA483: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x0000000F;break;//K1M0 with V4-V7 indexing  
+    /************************************************K2M0 register: Z indexing*******************************************************************/
+    case  0xA484: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x000000FF;break;//K2M0 with V0-V3 indexing  
+    case  0xA485: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x000000FF;break;//K2M0 with V4-V7 indexing    
+    /************************************************K3M0 register: Z indexing*******************************************************************/
+    case  0xA486: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0 with V0-V3 indexing  
+    case  0xA487: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0 with V4-V7 indexing    
+    /************************************************K4M0 register: Z indexing*******************************************************************/
+    case  0xA488: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0 with V0-V3 indexing
+    case  0xA489: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0 with V4-V7 indexing    
 
-    case  0xA682: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//算出T的地址，的Z0-Z3
-    case  0xA683: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//算出T的地址，的Z4-Z7
-    case  0xA684: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//算出C的地址，的Z0-Z3
-    case  0xA685: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//算出C的地址，的Z4-Z7
+    case  0xA682: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//Calculate the T address with Z0-Z3 indexing
+    case  0xA683: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//Calculate the T address with Z4-Z7 indexing
+    case  0xA684: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//Calculate the C address with Z0-Z3 indexing
+    case  0xA685: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//Calculate the C address with Z4-Z7 indexing
 
-    case  0xA686: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//算出D的地址，的Z0-Z3
-    case  0xA687: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//算出D的地址，的Z4-Z7
-    case  0xA688: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//大于等于D1000的Z0-Z3
-    case  0xA689: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//大于等于D1000的Z4-Z7
+    case  0xA686: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//Calculate the D address with Z0-Z3 indexing
+    case  0xA687: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//Calculate the D address with Z4-Z7 indexing
+    case  0xA688: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//D1000 and above with Z0-Z3 indexing
+    case  0xA689: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//D1000 and above with Z4-Z7 indexing
   }  
   PLC_PC++;
   return temp;
@@ -860,76 +846,76 @@ s32_union tempD;
   temp4 = PLC_D_C_T_addr(temp2) >> 8;
 
   switch ( type_of ) {    
-    case  0x8080: tempD.d16[0] = temp2; PLC_PC++; tempD.d16[1] = get_value(); PLC_PC -= 2; break;//算出K值
-    case  0x8280: tempD.d16[0] = temp2; PLC_PC++; tempD.d16[1] = get_value(); PLC_PC -= 2; break;//算出H值
+    case  0x8080: tempD.d16[0] = temp2; PLC_PC++; tempD.d16[1] = get_value(); PLC_PC -= 2; break;//Calculate the K value
+    case  0x8280: tempD.d16[0] = temp2; PLC_PC++; tempD.d16[1] = get_value(); PLC_PC -= 2; break;//Calculate the H value
 
-    case  0x8482: tempD.d32 = MOV_K()&0x0000000F; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
-    case  0x8484: tempD.d32 = MOV_K()&0x000000FF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
-    case  0x8486: tempD.d32 = MOV_K()&0x00000FFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
-    case  0x8488: tempD.d32 = MOV_K()&0x0000FFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
-    case  0x848A: tempD.d32 = MOV_K()&0x000FFFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
-    case  0x848C: tempD.d32 = MOV_K()&0x00FFFFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
-    case  0x848E: tempD.d32 = MOV_K()&0x0FFFFFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
-    case  0x8490: tempD.d32 = MOV_K();            bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送   
+    case  0x8482: tempD.d32 = MOV_K()&0x0000000F; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8484: tempD.d32 = MOV_K()&0x000000FF; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8486: tempD.d32 = MOV_K()&0x00000FFF; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8488: tempD.d32 = MOV_K()&0x0000FFFF; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x848A: tempD.d32 = MOV_K()&0x000FFFFF; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x848C: tempD.d32 = MOV_K()&0x00FFFFFF; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x848E: tempD.d32 = MOV_K()&0x0FFFFFFF; bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8490: tempD.d32 = MOV_K();            bitT_get = 1; PLC_PC++; break; //Transfer grouped bit-device values such as K4M0   
       
-    case  0x8680: tempD.d32 = PLC_Ws(RAM_D8000_ADDR + temp2 << 1); PLC_PC++; break;                 //算出D的地址 D8000
-    case  0x8682: tempD.d32 = PLC_Ws(RAM_T_ADDR     + temp2 << 1); PLC_PC++; break;                 //算出T的地址 
-    case  0x8684: tempD.d32 = PLC_Ws(RAM_C_ADDR     + temp2 << 1); PLC_PC++; break;                 //算出C的地址
-    case  0x8686: tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp2 << 1); PLC_PC++; break;                 //算出D的地址 
-    case  0x8688: tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp2 << 1); PLC_PC++; break;                 //大于等于D1000
+    case  0x8680: tempD.d32 = PLC_Ws(RAM_D8000_ADDR + temp2 << 1); PLC_PC++; break;                 //Calculate the D address D8000
+    case  0x8682: tempD.d32 = PLC_Ws(RAM_T_ADDR     + temp2 << 1); PLC_PC++; break;                 //Calculate the T address 
+    case  0x8684: tempD.d32 = PLC_Ws(RAM_C_ADDR     + temp2 << 1); PLC_PC++; break;                 //Calculate the C address
+    case  0x8686: tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp2 << 1); PLC_PC++; break;                 //Calculate the D address 
+    case  0x8688: tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp2 << 1); PLC_PC++; break;                 //D1000 and above
 
-    case  0xA080: tempD.d16[0] = temp2 + D8028; PLC_PC++; tempD.d16[1] = get_value() + D8029; PLC_PC -= 2; break; //算出K的地址，的Z0
-    case  0xA081: tempD.d16[0] = temp2 + D8182; PLC_PC++; tempD.d16[1] = get_value() + D8183; PLC_PC -= 2; break; //算出K的地址，的Z1
-    case  0xA082: tempD.d16[0] = temp2 + D8184; PLC_PC++; tempD.d16[1] = get_value() + D8185; PLC_PC -= 2; break; //算出K的地址，的Z2
-    case  0xA083: tempD.d16[0] = temp2 + D8186; PLC_PC++; tempD.d16[1] = get_value() + D8187; PLC_PC -= 2; break; //算出K的地址，的Z3
-    case  0xA084: tempD.d16[0] = temp2 + D8188; PLC_PC++; tempD.d16[1] = get_value() + D8189; PLC_PC -= 2; break; //算出K的地址，的Z4
-    case  0xA085: tempD.d16[0] = temp2 + D8190; PLC_PC++; tempD.d16[1] = get_value() + D8191; PLC_PC -= 2; break; //算出K的地址，的Z5
-    case  0xA086: tempD.d16[0] = temp2 + D8192; PLC_PC++; tempD.d16[1] = get_value() + D8193; PLC_PC -= 2; break; //算出K的地址，的Z6
-    case  0xA087: tempD.d16[0] = temp2 + D8194; PLC_PC++; tempD.d16[1] = get_value() + D8195; PLC_PC -= 2; break; //算出K的地址，的Z7 
+    case  0xA080: tempD.d16[0] = temp2 + D8028; PLC_PC++; tempD.d16[1] = get_value() + D8029; PLC_PC -= 2; break; //Calculate the K address with Z0 indexing
+    case  0xA081: tempD.d16[0] = temp2 + D8182; PLC_PC++; tempD.d16[1] = get_value() + D8183; PLC_PC -= 2; break; //Calculate the K address with Z1 indexing
+    case  0xA082: tempD.d16[0] = temp2 + D8184; PLC_PC++; tempD.d16[1] = get_value() + D8185; PLC_PC -= 2; break; //Calculate the K address with Z2 indexing
+    case  0xA083: tempD.d16[0] = temp2 + D8186; PLC_PC++; tempD.d16[1] = get_value() + D8187; PLC_PC -= 2; break; //Calculate the K address with Z3 indexing
+    case  0xA084: tempD.d16[0] = temp2 + D8188; PLC_PC++; tempD.d16[1] = get_value() + D8189; PLC_PC -= 2; break; //Calculate the K address with Z4 indexing
+    case  0xA085: tempD.d16[0] = temp2 + D8190; PLC_PC++; tempD.d16[1] = get_value() + D8191; PLC_PC -= 2; break; //Calculate the K address with Z5 indexing
+    case  0xA086: tempD.d16[0] = temp2 + D8192; PLC_PC++; tempD.d16[1] = get_value() + D8193; PLC_PC -= 2; break; //Calculate the K address with Z6 indexing
+    case  0xA087: tempD.d16[0] = temp2 + D8194; PLC_PC++; tempD.d16[1] = get_value() + D8195; PLC_PC -= 2; break; //Calculate the K address with Z7 indexing 
 
-    case  0xA280: tempD.d16[0] = temp2 + D8028; PLC_PC++; tempD.d16[1] = get_value() + D8029; PLC_PC -= 2; break; //算出H的地址，的Z0
-    case  0xA281: tempD.d16[0] = temp2 + D8182; PLC_PC++; tempD.d16[1] = get_value() + D8183; PLC_PC -= 2; break; //算出H的地址，的Z1
-    case  0xA282: tempD.d16[0] = temp2 + D8184; PLC_PC++; tempD.d16[1] = get_value() + D8185; PLC_PC -= 2; break; //算出H的地址，的Z2
-    case  0xA283: tempD.d16[0] = temp2 + D8186; PLC_PC++; tempD.d16[1] = get_value() + D8187; PLC_PC -= 2; break; //算出H的地址，的Z3
-    case  0xA284: tempD.d16[0] = temp2 + D8188; PLC_PC++; tempD.d16[1] = get_value() + D8189; PLC_PC -= 2; break; //算出H的地址，的Z4
-    case  0xA285: tempD.d16[0] = temp2 + D8190; PLC_PC++; tempD.d16[1] = get_value() + D8191; PLC_PC -= 2; break; //算出H的地址，的Z5
-    case  0xA286: tempD.d16[0] = temp2 + D8192; PLC_PC++; tempD.d16[1] = get_value() + D8193; PLC_PC -= 2; break; //算出H的地址，的Z6
-    case  0xA287: tempD.d16[0] = temp2 + D8194; PLC_PC++; tempD.d16[1] = get_value() + D8195; PLC_PC -= 2; break; //算出H的地址，的Z7         
-    /************************************************K1M0寄存器"Z"*******************************************************************/
-    case  0xA482: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0000000F; PLC_PC++; break;//K1M0的V0-V3  
-    case  0xA483: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0000000F; PLC_PC++; break;//K1M0的V4-V7  
-    /************************************************K2M0寄存器"Z"*****************************************************************/
-    case  0xA484: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x000000FF; PLC_PC++; break;//K2M0的V0-V3  
-    case  0xA485: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x000000FF; PLC_PC++; break;//K2M0的V4-V7    
-    /************************************************K3M0寄存器"Z"*******************************************************************/
-    case  0xA486: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x00000FFF; PLC_PC++; break;//K3M0的V0-V3  
-    case  0xA487: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x00000FFF; PLC_PC++; break;//K3M0的V4-V7    
-    /************************************************K4M0寄存器"Z"*******************************************************************/
-    case  0xA488: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0000FFFF; PLC_PC++; break;//K4M0的V0-V3
-    case  0xA489: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0000FFFF; PLC_PC++; break;//K4M0的V4-V7    
-    /************************************************K5M0寄存器"Z"*******************************************************************/
-    case  0xA48A: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x000FFFFF; PLC_PC++; break;//K1M0的V0-V3  
-    case  0xA48B: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x000FFFFF; PLC_PC++; break;//K1M0的V4-V7  
-    /************************************************K6M0寄存器"Z"*******************************************************************/
-    case  0xA48C: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x00FFFFFF; PLC_PC++; break;//K2M0的V0-V3  
-    case  0xA48D: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x00FFFFFF; PLC_PC++; break;//K2M0的V4-V7    
-    /************************************************K7M0寄存器"Z"*******************************************************************/
-    case  0xA48E: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0FFFFFFF; PLC_PC++; break;//K3M0的V0-V3  
-    case  0xA48F: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0FFFFFFF; PLC_PC++; break;//K3M0的V4-V7    
-    /************************************************K8M0寄存器"Z"*******************************************************************/
-    case  0xA490: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0的V0-V3
-    case  0xA491: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0的V4-V7  
-    /************************************************T寄存器"Z"*******************************************************************/
-    case  0xA682: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//算出T的地址，的Z0-Z3
-    case  0xA683: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//算出T的地址，的Z4-Z7
-    /************************************************C寄存器"Z"*******************************************************************/
-    case  0xA684: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//算出C的地址，的Z0-Z3
-    case  0xA685: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//算出C的地址，的Z4-Z7
-    /************************************************D寄存器"Z"*******************************************************************/
-    case  0xA686: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//算出D的地址，的Z0-Z3
-    case  0xA687: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//算出D的地址，的Z4-Z7
-    case  0xA688: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//大于等于D1000的Z0-Z3
-    case  0xA689: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//大于等于D1000的Z4-Z7      
+    case  0xA280: tempD.d16[0] = temp2 + D8028; PLC_PC++; tempD.d16[1] = get_value() + D8029; PLC_PC -= 2; break; //Calculate the H address with Z0 indexing
+    case  0xA281: tempD.d16[0] = temp2 + D8182; PLC_PC++; tempD.d16[1] = get_value() + D8183; PLC_PC -= 2; break; //Calculate the H address with Z1 indexing
+    case  0xA282: tempD.d16[0] = temp2 + D8184; PLC_PC++; tempD.d16[1] = get_value() + D8185; PLC_PC -= 2; break; //Calculate the H address with Z2 indexing
+    case  0xA283: tempD.d16[0] = temp2 + D8186; PLC_PC++; tempD.d16[1] = get_value() + D8187; PLC_PC -= 2; break; //Calculate the H address with Z3 indexing
+    case  0xA284: tempD.d16[0] = temp2 + D8188; PLC_PC++; tempD.d16[1] = get_value() + D8189; PLC_PC -= 2; break; //Calculate the H address with Z4 indexing
+    case  0xA285: tempD.d16[0] = temp2 + D8190; PLC_PC++; tempD.d16[1] = get_value() + D8191; PLC_PC -= 2; break; //Calculate the H address with Z5 indexing
+    case  0xA286: tempD.d16[0] = temp2 + D8192; PLC_PC++; tempD.d16[1] = get_value() + D8193; PLC_PC -= 2; break; //Calculate the H address with Z6 indexing
+    case  0xA287: tempD.d16[0] = temp2 + D8194; PLC_PC++; tempD.d16[1] = get_value() + D8195; PLC_PC -= 2; break; //Calculate the H address with Z7 indexing         
+    /************************************************K1M0 register: Z indexing*******************************************************************/
+    case  0xA482: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0000000F; PLC_PC++; break;//K1M0 with V0-V3 indexing  
+    case  0xA483: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0000000F; PLC_PC++; break;//K1M0 with V4-V7 indexing  
+    /************************************************K2M0 register: Z indexing*****************************************************************/
+    case  0xA484: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x000000FF; PLC_PC++; break;//K2M0 with V0-V3 indexing  
+    case  0xA485: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x000000FF; PLC_PC++; break;//K2M0 with V4-V7 indexing    
+    /************************************************K3M0 register: Z indexing*******************************************************************/
+    case  0xA486: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x00000FFF; PLC_PC++; break;//K3M0 with V0-V3 indexing  
+    case  0xA487: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x00000FFF; PLC_PC++; break;//K3M0 with V4-V7 indexing    
+    /************************************************K4M0 register: Z indexing*******************************************************************/
+    case  0xA488: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0000FFFF; PLC_PC++; break;//K4M0 with V0-V3 indexing
+    case  0xA489: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0000FFFF; PLC_PC++; break;//K4M0 with V4-V7 indexing    
+    /************************************************K5M0 register: Z indexing*******************************************************************/
+    case  0xA48A: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x000FFFFF; PLC_PC++; break;//K1M0 with V0-V3 indexing  
+    case  0xA48B: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x000FFFFF; PLC_PC++; break;//K1M0 with V4-V7 indexing  
+    /************************************************K6M0 register: Z indexing*******************************************************************/
+    case  0xA48C: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x00FFFFFF; PLC_PC++; break;//K2M0 with V0-V3 indexing  
+    case  0xA48D: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x00FFFFFF; PLC_PC++; break;//K2M0 with V4-V7 indexing    
+    /************************************************K7M0 register: Z indexing*******************************************************************/
+    case  0xA48E: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0FFFFFFF; PLC_PC++; break;//K3M0 with V0-V3 indexing  
+    case  0xA48F: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0FFFFFFF; PLC_PC++; break;//K3M0 with V4-V7 indexing    
+    /************************************************K8M0 register: Z indexing*******************************************************************/
+    case  0xA490: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0 with V0-V3 indexing
+    case  0xA491: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0 with V4-V7 indexing  
+    /************************************************T register: Z indexing*******************************************************************/
+    case  0xA682: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//Calculate the T address with Z0-Z3 indexing
+    case  0xA683: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//Calculate the T address with Z4-Z7 indexing
+    /************************************************C register: Z indexing*******************************************************************/
+    case  0xA684: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//Calculate the C address with Z0-Z3 indexing
+    case  0xA685: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//Calculate the C address with Z4-Z7 indexing
+    /************************************************D register: Z indexing*******************************************************************/
+    case  0xA686: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//Calculate the D address with Z0-Z3 indexing
+    case  0xA687: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//Calculate the D address with Z4-Z7 indexing
+    case  0xA688: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//D1000 and above with Z0-Z3 indexing
+    case  0xA689: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//D1000 and above with Z4-Z7 indexing      
   }
   PLC_PC += 2;
   return tempD.d32;
@@ -954,60 +940,60 @@ u32 type_of, temp1, temp2, temp3, temp4;
   temp4 = PLC_D_C_T_addr(temp2) >> 8;
 
   switch(type_of) {
-    case  0x8482: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case  0x8484: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case  0x8486: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case  0x8488: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case  0x8482: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8484: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8486: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case  0x8488: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
     
-    case  0x8680: PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出D的地址 D8000
-    case  0x8682: PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出T的地址 
-    case  0x8684: PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出C的地址
-    case  0x8686: PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出D的地址 
-    case  0x8688: PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //大于等于D1000
-    /************************************************K1M0寄存器"V"*******************************************************************/
-    case  0x9482: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V0-V3  
-    case  0x9483: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V4-V7  
-    /************************************************K2M0寄存器"V"*******************************************************************/
-    case  0x9484: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V0-V3  
-    case  0x9485: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V4-V7    
-    /************************************************K3M0寄存器"V"**************************************************************/
-    case  0x9486: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V0-V3  
-    case  0x9487: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V4-V7    
-    /************************************************K4M0寄存器"V"**************************************************************/
-    case  0x9488: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V0-V3  
-    case  0x9489: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V4-V7            
+    case  0x8680: PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the D address D8000
+    case  0x8682: PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the T address 
+    case  0x8684: PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the C address
+    case  0x8686: PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //Calculate the D address 
+    case  0x8688: PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //D1000 and above
+    /************************************************K1M0 register: V indexing*******************************************************************/
+    case  0x9482: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0 with V0-V3 indexing  
+    case  0x9483: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0 with V4-V7 indexing  
+    /************************************************K2M0 register: V indexing*******************************************************************/
+    case  0x9484: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0 with V0-V3 indexing  
+    case  0x9485: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0 with V4-V7 indexing    
+    /************************************************K3M0 register: V indexing**************************************************************/
+    case  0x9486: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0 with V0-V3 indexing  
+    case  0x9487: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0 with V4-V7 indexing    
+    /************************************************K4M0 register: V indexing**************************************************************/
+    case  0x9488: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0 with V0-V3 indexing  
+    case  0x9489: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0 with V4-V7 indexing            
 
-    case  0x9682: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出T的地址，的V0-V3
-    case  0x9683: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出T的地址，的V4-V7
-    case  0x9684: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的V0-V3
-    case  0x9685: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的V4-V7
+    case  0x9682: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the T address with V0-V3 indexing
+    case  0x9683: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the T address with V4-V7 indexing
+    case  0x9684: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the C address with V0-V3 indexing
+    case  0x9685: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the C address with V4-V7 indexing
 
-    case  0x9686: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的V0-V3
-    case  0x9687: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的V4-V7
-    case  0x9688: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的V0-V3
-    case  0x9689: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的V4-V7
-    /************************************************K1M0寄存器"Z"*******************************************************************/
-    case  0xA482: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V0-V3  
-    case  0xA483: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V4-V7  
-    /************************************************K2M0寄存器"Z"**************************************************************/
-    case  0xA484: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V0-V3  
-    case  0xA485: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V4-V7    
-    /************************************************K3M0寄存器"Z"**************************************************************/
-    case  0xA486: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V0-V3  
-    case  0xA487: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V4-V7    
-    /************************************************K4M0寄存器"Z"**************************************************************/
-    case  0xA488: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V0-V3
-    case  0xA489: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V4-V7      
+    case  0x9686: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the D address with V0-V3 indexing
+    case  0x9687: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the D address with V4-V7 indexing
+    case  0x9688: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//D1000 and above with V0-V3 indexing
+    case  0x9689: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//D1000 and above with V4-V7 indexing
+    /************************************************K1M0 register: Z indexing*******************************************************************/
+    case  0xA482: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0 with V0-V3 indexing  
+    case  0xA483: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0 with V4-V7 indexing  
+    /************************************************K2M0 register: Z indexing**************************************************************/
+    case  0xA484: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0 with V0-V3 indexing  
+    case  0xA485: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0 with V4-V7 indexing    
+    /************************************************K3M0 register: Z indexing**************************************************************/
+    case  0xA486: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0 with V0-V3 indexing  
+    case  0xA487: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0 with V4-V7 indexing    
+    /************************************************K4M0 register: Z indexing**************************************************************/
+    case  0xA488: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0 with V0-V3 indexing
+    case  0xA489: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0 with V4-V7 indexing      
 
-    case  0xA682: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z0-Z3
-    case  0xA683: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z4-Z7
-    case  0xA684: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z0-Z3
-    case  0xA685: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z4-Z7
+    case  0xA682: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the C address with Z0-Z3 indexing
+    case  0xA683: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the C address with Z4-Z7 indexing
+    case  0xA684: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the C address with Z0-Z3 indexing
+    case  0xA685: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the C address with Z4-Z7 indexing
 
-    case  0xA686: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的Z0-Z3
-    case  0xA687: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的Z4-Z7
-    case  0xA688: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的Z0-Z3
-    case  0xA689: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的Z4-Z7
+    case  0xA686: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the D address with Z0-Z3 indexing
+    case  0xA687: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//Calculate the D address with Z4-Z7 indexing
+    case  0xA688: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//D1000 and above with Z0-Z3 indexing
+    case  0xA689: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//D1000 and above with Z4-Z7 indexing
     }
 }
 //=======================================================================================================
@@ -1028,54 +1014,54 @@ u32 type_of, temp1, temp2, temp3, temp4;
   temp4 = PLC_D_C_T_addr(temp2) >> 8;
 
   switch(type_of) {
-    case 0x8482: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case 0x8484: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case 0x8486: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case 0x8488: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case 0x848A: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case 0x848C: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case 0x848E: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
-    case 0x8490: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送     
+    case 0x8482: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case 0x8484: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case 0x8486: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case 0x8488: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case 0x848A: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case 0x848C: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case 0x848E: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0    
+    case 0x8490: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //Transfer grouped bit-device values such as K4M0     
     
-    case 0x8680: PLC_Ws(RAM_D8000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出D的地址 D8000
-    case 0x8682: PLC_Ws(RAM_T_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出T的地址 
-    case 0x8684: PLC_Ws(RAM_C_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出C的地址
-    case 0x8686: PLC_Ws(RAM_D0000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出D的地址 
-    case 0x8688: PLC_Ws(RAM_D1000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //大于等于D1000
-    /************************************************K1M0寄存器"Z"*******************************************************************/
-    case 0xA482: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0的V0-V3  
-    case 0xA483: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0的V4-V7  
-    /************************************************K2M0寄存器"Z"*******************************************************************/
-    case 0xA484: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K2M0的V0-V3  
-    case 0xA485: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K2M0的V4-V7    
-    /************************************************K3M0寄存器"Z"*******************************************************************/
-    case 0xA486: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K3M0的V0-V3  
-    case 0xA487: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K3M0的V4-V7    
-    /************************************************K4M0寄存器"Z"*******************************************************************/
-    case 0xA488: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K4M0的V0-V3
-    case 0xA489: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K4M0的V4-V7    
-    /************************************************K5M0寄存器"Z"*******************************************************************/
-    case 0xA48A: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K5M0的V0-V3  
-    case 0xA48B: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K5M0的V4-V7    
-    /************************************************K6M0寄存器"Z"*******************************************************************/
-    case 0xA48C: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K6M0的V0-V3  
-    case 0xA48D: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K6M0的V4-V7    
-    /************************************************K7M0寄存器"Z"*******************************************************************/
-    case 0xA48E: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K7M0的V0-V3  
-    case 0xA48F: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K7M0的V4-V7    
-    /************************************************K8M0寄存器"Z"*******************************************************************/
-    case 0xA490: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//k8M0的V0-V4  
-    case 0xA491: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K8M0的V4-V7      
-    /************************************************T寄存器"Z"*******************************************************************/
-    case 0xA682: PLC_Ws(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//算出T的地址，的Z0-Z3
-    case 0xA683: PLC_Ws(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//算出T的地址，的Z4-Z7
-    case 0xA684: PLC_Ws(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//算出C的地址，的Z0-Z3
-    case 0xA685: PLC_Ws(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//算出C的地址，的Z4-Z7
+    case 0x8680: PLC_Ws(RAM_D8000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the D address D8000
+    case 0x8682: PLC_Ws(RAM_T_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the T address 
+    case 0x8684: PLC_Ws(RAM_C_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the C address
+    case 0x8686: PLC_Ws(RAM_D0000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //Calculate the D address 
+    case 0x8688: PLC_Ws(RAM_D1000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //D1000 and above
+    /************************************************K1M0 register: Z indexing*******************************************************************/
+    case 0xA482: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0 with V0-V3 indexing  
+    case 0xA483: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0 with V4-V7 indexing  
+    /************************************************K2M0 register: Z indexing*******************************************************************/
+    case 0xA484: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K2M0 with V0-V3 indexing  
+    case 0xA485: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K2M0 with V4-V7 indexing    
+    /************************************************K3M0 register: Z indexing*******************************************************************/
+    case 0xA486: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K3M0 with V0-V3 indexing  
+    case 0xA487: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K3M0 with V4-V7 indexing    
+    /************************************************K4M0 register: Z indexing*******************************************************************/
+    case 0xA488: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K4M0 with V0-V3 indexing
+    case 0xA489: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K4M0 with V4-V7 indexing    
+    /************************************************K5M0 register: Z indexing*******************************************************************/
+    case 0xA48A: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K5M0 with V0-V3 indexing  
+    case 0xA48B: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K5M0 with V4-V7 indexing    
+    /************************************************K6M0 register: Z indexing*******************************************************************/
+    case 0xA48C: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K6M0 with V0-V3 indexing  
+    case 0xA48D: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K6M0 with V4-V7 indexing    
+    /************************************************K7M0 register: Z indexing*******************************************************************/
+    case 0xA48E: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K7M0 with V0-V3 indexing  
+    case 0xA48F: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K7M0 with V4-V7 indexing    
+    /************************************************K8M0 register: Z indexing*******************************************************************/
+    case 0xA490: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//k8M0 with V0-V4 indexing  
+    case 0xA491: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K8M0 with V4-V7 indexing      
+    /************************************************T register: Z indexing*******************************************************************/
+    case 0xA682: PLC_Ws(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//Calculate the T address with Z0-Z3 indexing
+    case 0xA683: PLC_Ws(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//Calculate the T address with Z4-Z7 indexing
+    case 0xA684: PLC_Ws(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//Calculate the C address with Z0-Z3 indexing
+    case 0xA685: PLC_Ws(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//Calculate the C address with Z4-Z7 indexing
 
-    case 0xA686: PLC_Ws(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//算出D的地址，的Z0-Z3
-    case 0xA687: PLC_Ws(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//算出D的地址，的Z4-Z7
-    case 0xA688: PLC_Ws(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//大于等于D1000的Z0-Z3
-    case 0xA689: PLC_Ws(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//大于等于D1000的Z4-Z7
+    case 0xA686: PLC_Ws(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//Calculate the D address with Z0-Z3 indexing
+    case 0xA687: PLC_Ws(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//Calculate the D address with Z4-Z7 indexing
+    case 0xA688: PLC_Ws(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//D1000 and above with Z0-Z3 indexing
+    case 0xA689: PLC_Ws(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//D1000 and above with Z4-Z7 indexing
   }
   PLC_PC += 2;
 }
@@ -1102,13 +1088,13 @@ float_union tempF;
 
   temp2  = (temp2 << 8) | (temp3 & 0xFF);
 
-  if      (type_of == 0x8080) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //算出K值
-  else if (type_of == 0x8280) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //算出H值            
-  else if (type_of == 0x8680) {tempF.data = PLC_Wf(RAM_D8000_ADDR + temp1 << 1);} //算出D的地址 D8000
-  else if (type_of == 0x8682) {tempF.data = PLC_Wf(RAM_T_ADDR     + temp1 << 1);} //算出T的地址 
-  else if (type_of == 0x8684) {tempF.data = PLC_Wf(RAM_C_ADDR     + temp1 << 1);} //算出C的地址
-  else if (type_of == 0x8686) {tempF.data = PLC_Wf(RAM_D0000_ADDR + temp1 << 1);} //算出D的地址 
-  else if (type_of == 0x8688) {tempF.data = PLC_Wf(RAM_D1000_ADDR + temp1 << 1);} //大于等于D1000
+  if      (type_of == 0x8080) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //Calculate the K value
+  else if (type_of == 0x8280) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //Calculate the H value            
+  else if (type_of == 0x8680) {tempF.data = PLC_Wf(RAM_D8000_ADDR + temp1 << 1);} //Calculate the D address D8000
+  else if (type_of == 0x8682) {tempF.data = PLC_Wf(RAM_T_ADDR     + temp1 << 1);} //Calculate the T address 
+  else if (type_of == 0x8684) {tempF.data = PLC_Wf(RAM_C_ADDR     + temp1 << 1);} //Calculate the C address
+  else if (type_of == 0x8686) {tempF.data = PLC_Wf(RAM_D0000_ADDR + temp1 << 1);} //Calculate the D address 
+  else if (type_of == 0x8688) {tempF.data = PLC_Wf(RAM_D1000_ADDR + temp1 << 1);} //D1000 and above
   return tempF.data;
 }
 
@@ -1212,21 +1198,21 @@ u32 C;
   switch (*PLC_PC >> 8) {
     case 0x80:
       if ( PLC_ACC_BIT & 0x01 ) {
-//        enable_C_K();
+
         tempV = *PLC_PC & 0x00FF;
         PLC_PC++;
         tempV += (*PLC_PC & 0x00FF) << 8;
-        if ( temp >= 200 ) {                     //判断是不是C200以上的 寄存器
+        if ( temp >= 200 ) {                     //Check whether this is a counter register numbered C200 or higher
           PLC_PC++;
           tempV += (*PLC_PC & 0x00FF) << 16;
           PLC_PC++;
           tempV += (*PLC_PC & 0x00FF) << 24;
           C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
-          if ( PLC_Ws(C) < tempV ) {            //把C当前值与目标值进行比较
+          if ( PLC_Ws(C) < tempV ) {            //Compare the current counter value with the target value
             if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
               PLC_Ws(C) += 1;
           }
-          if ( PLC_Ws(C) < tempV )              //比较溢出值
+          if ( PLC_Ws(C) < tempV )              //Compare the overflow value
             PLC_BIT_OFF(AddrB_CO * 8 + temp);     
           else
             PLC_BIT_ON(AddrB_CO * 8 + temp);
@@ -1243,17 +1229,17 @@ u32 C;
         CMD_REG = AddrB_CE * 8 + (u8)temp;
         OUT();
       } else {
-//        disable_C_K(); 
+
         tempV = *PLC_PC & 0x00FF;
         PLC_PC++;
         tempV += (*PLC_PC & 0x00FF) << 8;
-        if ( temp >= 200 ) {                //判断是不是C200以上的 寄存器
+        if ( temp >= 200 ) {                //Check whether this is a counter register numbered C200 or higher
           PLC_PC++;
           tempV += (*PLC_PC & 0x00FF) << 16;
           PLC_PC++;
           tempV += (*PLC_PC & 0x00FF) << 24;
           C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
-          if ( PLC_Ws(C) < tempV )              //把C当前值与目标值进行比较
+          if ( PLC_Ws(C) < tempV )              //Compare the current counter value with the target value
             PLC_BIT_OFF(AddrB_CO * 8 + temp);     
           else
             PLC_BIT_ON(AddrB_CO * 8 + temp);        
@@ -1267,7 +1253,7 @@ u32 C;
         OUT();
       }
 
-      break;  //进行K赋值操作
+      break;  //Assign a K-group value
     case 0x86:
       tempV = (*PLC_PC & 0x00FF) >> 1;
       PLC_PC++;
@@ -1276,12 +1262,12 @@ u32 C;
         case 0x88: tempV += 1000 + (*PLC_PC & 0x00FF) << 7; break; 
       }
       if ( PLC_ACC_BIT & 0x01 ) {
-//        enable_C_D();
+
         tempV = PLC_16BIT(Addr_D0000 + tempV * 2);
-        if ( temp >= 200 ) {              //判断是不是C200以上的 寄存器
+        if ( temp >= 200 ) {              //Check whether this is a counter register numbered C200 or higher
           tempV += PLC_16BIT(Addr_D0000 + tempV * 2 + 2) << 16;
           C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
-          if ( PLC_Ws(C) < tempV ) {     //把C当前值与目标值进行比较
+          if ( PLC_Ws(C) < tempV ) {     //Compare the current counter value with the target value
             if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
               PLC_Ws(C) += 1;
           }
@@ -1303,12 +1289,12 @@ u32 C;
         CMD_REG = AddrB_CE * 8 + (u8)temp;
         OUT();
       } else {
-//        disable_C_D();
+
         tempV = PLC_16BIT(Addr_D0000 + tempV * 2);
-        if ( temp >= 200 ) {              //判断是不是C200以上的 寄存器
+        if ( temp >= 200 ) {              //Check whether this is a counter register numbered C200 or higher
           tempV += PLC_16BIT(Addr_D0000 + tempV * 2 + 2) << 16;
           C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2;
-          if ( PLC_Ws(C) < tempV )      //比较溢出值
+          if ( PLC_Ws(C) < tempV )      //Compare the overflow value
             PLC_BIT_OFF(AddrB_CO * 8 + temp);
           else
             PLC_BIT_ON(AddrB_CO * 8 + temp);
@@ -1323,7 +1309,7 @@ u32 C;
         OUT();          // 2700 / 8 = 4E0
       }
       
-      break;  //进行D赋值操作
+      break;  //Assign a D-register value
   }  
 }
 //=======================================================================================================
@@ -1566,7 +1552,7 @@ u32 addr;
   addr = CMD_REG & 0xFF;
   switch (CMD_REG >> 8) {
     case 0x86:
-// RESET_T();
+
       if ( PLC_ACC_BIT & 0x01 ) {
         PLC_BIT_OFF(AddrB_TO + addr);
         PLC_BIT_OFF(AddrB_T2 + addr);
@@ -1577,7 +1563,7 @@ u32 addr;
         PLC_BIT_OFF(AddrB_T1 + addr);
       break;
     case 0x8E:
-// RESET_C();
+
       if ( PLC_ACC_BIT & 0x01 ) {
         if ( addr >= 200 ) {
           PLC_16BIT(Addr_CVal + addr * 2 + 2) = 0;
@@ -2021,7 +2007,7 @@ signed int temp,i;
     value = get_value();
     put_value();
     temp = get_value();
-    PLC_PC -= 2; // ????
+    PLC_PC -= 2; // Adjust the program counter by two words
     for ( i = 1; i < temp; i++ ) {
       if ( bitT_get == 1 )
         Transfer= i * 16;
@@ -2035,7 +2021,7 @@ signed int temp,i;
         Transfer = i * 2;
       put_value();
     }
-    PLC_PC += 2; // ????
+    PLC_PC += 2; // Adjust the program counter by two words
     Transfer = 0;
   } else
     PLC_PC += 6;
@@ -2048,7 +2034,7 @@ signed int temp,i;
     value = get_value();
     put_value();
     temp = get_value();
-    PLC_PC -= 2; // ????
+    PLC_PC -= 2; // Adjust the program counter by two words
     for ( i = 1; i < temp; i++ ) {
       if ( bitT_put == 1 )
         Transfer = i * 16;
@@ -2057,7 +2043,7 @@ signed int temp,i;
       PLC_PC -= 2;
       put_value();
     }
-    PLC_PC += 2; // ????
+    PLC_PC += 2; // Adjust the program counter by two words
     Transfer = 0;
   } else
     PLC_PC += 6;
@@ -2071,7 +2057,7 @@ signed int temp,i;
     value = get_valueD();
     put_valueD();
     temp = get_valueD();
-    PLC_PC -= 4; // ????
+    PLC_PC -= 4; // Adjust the program counter by two words
     for( i = 1; i < temp; i++ ) {
       if ( bitT_put == 1)
         Transfer = i * 32;
@@ -2080,7 +2066,7 @@ signed int temp,i;
       PLC_PC -= 4;
       put_valueD();
     }
-    PLC_PC += 2; // ????
+    PLC_PC += 2; // Adjust the program counter by two words
     Transfer = 0;
   } else
     PLC_PC += 12;
@@ -3431,7 +3417,6 @@ void HOUR(void) {
 // 176 RD3A 0x0170  7 - 0 -
 // 177 WR3A 0x0172  7 - 0 -
 
-
 unsigned int b2g(unsigned int lStart,unsigned int lEnd,unsigned int lValue) {
 unsigned int Start = lStart, End = lEnd, Temp = 0, Counter = 0;
 unsigned char Type = 1;
@@ -3454,18 +3439,19 @@ unsigned char Type = 1;
 }
 
 /**
- * ?????????
- * @param lStart lValue????????????
- * @param lEnd lValue????????????
- * @param lValue ??????????
- * @return ???????????????
- * @see b2g()   b2g  ????????
- * @see BtoG()  BtoG ????????
- * @see GtoB()  BtoG ????????
- * @useage a=b2g(0,15,6); //??6??????????? ??a??4
- * @memo lValue?????????????[lStart,lEnd]?,??????????.???,???
- *       ???,????????????.??lStart,lEnd?????2?N???1. ??lStart?0.
- *       ????????,????GtoB()???????.?????????????105%~140%.
+ * Convert a Gray-code value to binary within the specified range.
+ * @param lStart Lower bound of the conversion range.
+ * @param lEnd Upper bound of the conversion range.
+ * @param lValue Gray-code value to convert.
+ * @return Decoded binary value.
+ * @see b2g() Binary-to-Gray conversion over a specified range.
+ * @see BtoG() Binary-to-Gray conversion wrapper.
+ * @see GtoB() Gray-to-binary conversion wrapper.
+ * @usage a=b2g(0,15,6); // Convert binary 6 to Gray code; a is 5.
+ * @note Conversion range: [lStart,lEnd]. The wrappers use lStart = 0
+ *       and lEnd = 2^N - 1. Other original notes were unreadable.
+ *       The original example claimed a result of 4; the code yields 5.
+ *       An original 105%-140% comparison could not be recovered.
  */
 
 unsigned int g2b(unsigned int lStart,unsigned int lEnd,unsigned int lValue) {
@@ -3490,7 +3476,7 @@ unsigned char Type = 1;
 }
 
 //=======================================================================================================
-// ????:  int BtoG(unsigned int lValue)
+// Function:  int BtoG(unsigned int lValue)
 //=======================================================================================================
 signed int BtoG(unsigned int lValue) {
 register unsigned int lV = lValue, lMax = 1;
@@ -3505,7 +3491,7 @@ register unsigned int lV = lValue, lMax = 1;
 }
 
 //=======================================================================================================
-// ????:  int GtoB(unsigned int lValue)
+// Function:  int GtoB(unsigned int lValue)
 //=======================================================================================================
 signed int GtoB(unsigned int lValue) {
 register unsigned int lV = lValue, lMax = 1;
@@ -4198,8 +4184,6 @@ u32 temp;
         FUNC_BASIC[CMD_CMD >> 12]();
       }
 
-//#include "loop.c"
-
       D8010 = D8011 = D8012 = PLC_RUN_TIME;
       PLC_PULS = 0;     
       PLC_BIT_OFF(M8002);
@@ -4228,7 +4212,7 @@ u32 temp;
     PLC_NEW_PROG = 1;
     PLC_PULS = 1; // Initialization pulse used to 8002 8003
     RUN_LED_OFF;
-//    PLC_UPDATE_PROG = 0; // ????
+//    PLC_UPDATE_PROG = 0; // Clear the program-update flag (disabled)
     PLC_IO_Refresh();
     PLC_STL_CMD = PLC_STL_Status = 0;  
     if ( PLC_RUN_FLAG == 0 ) {
@@ -4237,7 +4221,7 @@ u32 temp;
       RST_T_D_C_M_data();
     }
   }
-  D8001 = 0; // ????              //设置版本号
+  D8001 = 0; // Set the version number
 } 
 //=======================================================================================================
 //=======================================================================================================
