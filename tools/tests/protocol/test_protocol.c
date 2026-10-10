@@ -8,6 +8,13 @@
 
 #ifdef TEST_WITH_RUNTIME
 #include "../../../src/ladder.c"
+#if PLC_RUNTIME_EXPERIMENTAL
+volatile u16 PLC_RUN_TIME;
+u16 X_DIY;
+void RTC_Set(u16 year,u8 month,u8 day,u8 hour,u8 minute,u8 second) {
+  (void)year;(void)month;(void)day;(void)hour;(void)minute;(void)second;
+}
+#endif
 #else
 volatile u8 PLC_NEW_PROG;
 static int requested_run = -1;
