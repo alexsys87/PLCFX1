@@ -1,0 +1,4243 @@
+/********************************************************/
+// CPU需要：STM32F103--RAM内存不小于64K  Flash内存不小于128K
+// 本代码已在STM32F103RDT6、VET6测试通过
+// 编辑日期：20150909
+// editor by 小小晟
+// 网店：shop182385147.taobao.com
+/********************************************************/
+
+#include "stm32f10x.h"
+#include <stdio.h>
+#include "PLC_IO.h"
+#include "PLC_Dialogue.h"
+#include "math.h"          //数学函数库 
+//#include "Gray.h"          //格雷码转换库
+#include "PLC_CONF.H"
+
+//extern unsigned char Y0P,Y1P;                //
+//extern unsigned short Plus_CMP0,Plus_CMP1;   //脉冲标志位
+extern u8  X_DIY;                             //滤波时间
+extern u16 PLC_RUN_TIME;                     //扫描时间
+extern u8 PLC_UPDATE_PROG;
+extern void RTC_Set(u16 syear,u8 smon,u8 sday,u8 hour,u8 min,u8 sec);//时间修改程序
+extern void PLC_IO_Refresh(void);            //IO刷新输出程序
+//extern u8  Step_Address[MAXSTEP];        //为PLS OR PLF use  
+
+static u8 PLC_ACC_BIT; // @ (RAM_ACC_ADDR);
+static u8 PLC_MPS_BIT; //程序执行专用(运算栈及分线栈)
+static u8 PLC_RUN_FLAG; 
+static const u16 *PLC_PC;                  //PLC程序指针
+static const u16 *PLC_Err;                   //PLC出错步
+static u32 mov_d_addr;                       //K?M&Y&S&X指令缓存
+static const u16 *PLC_P_Addr[128];           //方便调子程序取指针
+static const u16 *p_save[64];               //调子程序时保存上一个执行点位
+u16 process[64];                             //调子程序时保存上一个子程序值
+//u8  Step_Address[MAXSTEP / 8]; // __at (RAM_ADDR + 0x6400);
+
+#define USE_COMPARE_MOVE
+#define USE_TIME
+#define USE_SPECIAL
+#define USE_ARIPH
+#define USE_DOUBLE
+#define USE_MULDIV
+#define USE_FLOAT
+#define USE_ROTATE
+
+const unsigned char PLC_BIT_OR[] ={0x01,0x02,0x04,0x08,0X10,0X20,0X40,0X80};
+const unsigned char PLC_BIT_AND[]={0xFE,0XFD,0XFB,0XF7,0XEF,0XDF,0XBF,0X7F};
+
+u32 CMD_ADDR, CMD_REG, CMD_PULS, CMD_PULS_TEST;
+u16 CMD_CMD;
+
+u8  PLC_PULS;
+u8  PLC_PRG_STOP = 0;
+u8  PLC_NEW_PROG;                        //从新编程缓存寄存器
+
+u8  Flag_bit = 0xff, bitT_put, bitT_get; //其实就是k的标志位  减小函数的量，减轻CPU负担     
+u32 value;                               //作用于加减法，减小函数的量，减轻CPU负担     
+u32 Transfer = 0;                        //作用多地传递和成批传递 减小函数的量，减轻CPU负担  
+
+float_union FLOAT;
+u64_union   u64d; //,u64d2;
+
+#define WEAK __attribute__ ((weak))
+void WEAK ERR(void);
+void WEAK NOP(void);
+
+void WEAK FUNC_0(void); // 0x0xxx 0x1xxx
+void WEAK LD(void);     // 0x2XXX
+void WEAK LDI(void);    // 0x3XXX
+void WEAK AND(void);    // 0x4XXX
+void WEAK ANI(void);    // 0x5XXX
+void WEAK OR(void);     // 0x6XXX
+void WEAK ORI(void);    // 0x7XXX
+void WEAK OUT(void);    // 0xCXXX
+void WEAK BSET(void);   // 0xDXXX
+void WEAK RST(void);    // 0xEXXX
+void WEAK FUNC_F(void); // 0xFxxx
+
+void WEAK STL(void);    // 0xFXXX
+void WEAK RET(void);    // 0xF7XX
+void WEAK FUNC_FF(void);// 0xFFxx
+
+void WEAK PLS(void);
+void WEAK PLF(void);
+void WEAK MC(void);
+void WEAK MCR(void);
+void WEAK RST_TC(void);
+void WEAK RST_D(void);
+void WEAK END(void);
+
+void WEAK CJ(void);
+void WEAK CALL(void);
+void WEAK SRET(void);
+void WEAK IRET(void);
+void WEAK EI(void);
+void WEAK DI(void);
+void WEAK WDT(void);
+void WEAK FOR(void);
+void WEAK NEXT(void);
+
+void WEAK CMP(void);
+void WEAK DCMP(void);
+void WEAK ZCP(void);
+void WEAK DZCP(void);
+void WEAK MOV(void);
+void WEAK DMOV(void);
+void WEAK SMOV(void);
+void WEAK CML(void);
+void WEAK DCML(void);
+void WEAK BMOV(void);
+void WEAK FMOV(void);
+void WEAK DFMOV(void);
+void WEAK XCH(void);
+void WEAK DXCH(void);
+void WEAK BCD(void);
+void WEAK DBCD(void);
+void WEAK BIN(void);
+void WEAK DBIN(void);
+
+void WEAK ADD(void); 
+void WEAK DADD(void);
+void WEAK SUB(void); 
+void WEAK DSUB(void);
+void WEAK MUL(void); 
+void WEAK DMUL(void);
+void WEAK DIV(void); 
+void WEAK DDIV(void);
+void WEAK INC(void); 
+void WEAK DINC(void);
+void WEAK DEC(void); 
+void WEAK DDEC(void);
+void WEAK WAND(void);
+void WEAK DWAND(void);
+void WEAK WOR(void); 
+void WEAK DWOR(void);
+void WEAK WXOR(void);
+void WEAK DWXOR(void);
+void WEAK NEG(void); 
+void WEAK DNEG(void);
+void WEAK ROR(void); 
+void WEAK DROR(void);
+void WEAK ROL(void); 
+void WEAK DROL(void);
+void WEAK RCR(void); 
+void WEAK DRCR(void);
+void WEAK RCL(void); 
+void WEAK DRCL(void);
+void WEAK SFTR(void);
+void WEAK SFTL(void);
+void WEAK WSFR(void);
+void WEAK WSFL(void);
+void WEAK SFWR(void);
+void WEAK SFWL(void);
+void WEAK ZRST(void);
+void WEAK DECO(void);
+void WEAK ENCO(void);
+void WEAK SUM(void); 
+void WEAK DSUM(void);
+void WEAK BON(void); 
+void WEAK DBON(void);
+void WEAK MEAN(void);
+void WEAK DMEAN(void);
+void WEAK ANS(void); 
+void WEAK ANR(void); 
+void WEAK SQR(void); 
+void WEAK DSQR(void);
+void WEAK FLT(void); 
+void WEAK DFLT(void);
+void WEAK REF(void); 
+void WEAK REFF(void);
+void WEAK MTR(void); 
+void WEAK DHSCS(void);
+void WEAK DHSCR(void);
+void WEAK DHSZ(void);
+void WEAK SPD(void); 
+void WEAK DSPD(void);
+void WEAK PLSY(void);
+void WEAK PWM(void); 
+void WEAK PLSR(void);
+void WEAK IST(void); 
+void WEAK SER(void); 
+void WEAK DSER(void);
+void WEAK ABSD(void);
+void WEAK DABSD(void);
+void WEAK INCD(void);
+void WEAK TTMR(void);
+void WEAK STMR(void);
+void WEAK ALT(void); 
+void WEAK RAMP(void);
+void WEAK ROTS(void);
+void WEAK SORT(void);
+void WEAK TKY(void); 
+void WEAK HKY(void); 
+void WEAK DSW(void); 
+void WEAK SEGD(void);
+void WEAK SEGL(void);
+void WEAK ARWS(void);
+void WEAK ASC(void); 
+void WEAK PR(void);
+void WEAK FROM(void);
+void WEAK TO(void);
+void WEAK RS(void);
+void WEAK PRUN(void);
+void WEAK ASCI(void);
+void WEAK HEX(void); 
+void WEAK CCD(void); 
+void WEAK VRRD(void);
+void WEAK VRSC(void);
+void WEAK RS2(void); 
+void WEAK PID(void); 
+void WEAK ZPUSH(void);
+void WEAK ZPOP(void);
+void WEAK DECMP(void);
+void WEAK DEZCP(void);
+void WEAK DEMOV(void);
+void WEAK DESTR(void);
+void WEAK DEVAL(void);
+void WEAK EBCD(void);
+void WEAK EBIN(void);
+
+void WEAK DEADD(void);
+void WEAK DESUB(void);
+void WEAK DEMUL(void);
+void WEAK DEDIV(void);
+void WEAK DEXP(void); 
+void WEAK DLOGE(void);
+void WEAK DLOG10(void);
+void WEAK DESQR(void);
+void WEAK DENEG(void);
+void WEAK INT(void);
+void WEAK DINT(void); 
+void WEAK DSIN(void); 
+void WEAK DCOS(void); 
+void WEAK DTAN(void); 
+void WEAK DASIN(void);
+void WEAK DACOS(void);
+void WEAK DATAN(void);
+void WEAK DRAD(void); 
+void WEAK DDEG(void); 
+void WEAK WSUM(void); 
+void WEAK DWSUM(void);
+void WEAK WTOB(void); 
+void WEAK BTOW(void); 
+void WEAK UNI(void);
+void WEAK DIS(void);
+void WEAK SWAP(void); 
+void WEAK DSWAP(void);
+void WEAK SORT2(void);
+void WEAK DSORT2(void);
+void WEAK TCMP(void); 
+void WEAK TZCP(void); 
+void WEAK TADD(void); 
+void WEAK TSUB(void); 
+void WEAK HTOS(void); 
+void WEAK STOH(void); 
+void WEAK TRD(void);
+void WEAK TWR(void);
+void WEAK HOUR(void); 
+void WEAK GRY(void);
+void WEAK DGRY(void); 
+void WEAK GBIN(void); 
+void WEAK DGBIN(void);
+void WEAK RD3A(void); 
+void WEAK WR3A(void); 
+void WEAK LDP(void);
+void WEAK LDF(void);
+void WEAK ANDP(void); 
+void WEAK ANDF(void); 
+void WEAK ORP(void);
+void WEAK ORF(void);
+void WEAK LD_EQU(void);
+void WEAK DLD_EQU(void);
+void WEAK LD_GTR(void);
+void WEAK DLD_GTR(void);
+void WEAK LD_LSS(void);
+void WEAK DLD_LSS(void);
+void WEAK LD_NEQ(void);
+void WEAK DLD_NEQ(void);
+void WEAK LD_LEQ(void);
+void WEAK DLD_LEQ(void);
+void WEAK LD_GEQ(void);
+void WEAK DLD_GEQ(void);
+void WEAK AND_EQU(void);
+void WEAK DAND_EQU(void);
+void WEAK AND_GTR(void);
+void WEAK DAND_GTR(void);
+void WEAK AND_LSS(void);
+void WEAK DAND_LSS(void);
+void WEAK AND_NEQ(void);
+void WEAK DAND_NEQ(void);
+void WEAK AND_LEQ(void);
+void WEAK DAND_LEQ(void);
+void WEAK AND_GEQ(void);
+void WEAK DAND_GEQ(void);
+void WEAK OR_EQU(void);
+void WEAK DOR_EQU(void);
+void WEAK OR_GTR(void);
+void WEAK DOR_GTR(void);
+void WEAK OR_LSS(void);
+void WEAK DOR_LSS(void);
+void WEAK OR_NEQ(void);
+void WEAK DOR_NEQ(void);
+void WEAK OR_LEQ(void);
+void WEAK DOR_LEQ(void);
+void WEAK OR_GEQ(void);
+void WEAK DOR_GEQ(void);
+
+//таблица :
+void (* const FUNC_BASIC[])(void) = {
+  FUNC_0,   FUNC_0,   LD,       LDI,      AND,      ANI,      OR,       ORI,
+  ERR,      ERR,      ERR,      NOP,      OUT,      BSET,     RST,      FUNC_F
+};
+
+void (* const FUNC_EXT_F[])(void) = {
+  STL,      STL,      STL,      STL,      ERR,      ERR,      ERR,      RET,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      FUNC_FF
+};
+
+void (* const FUNC_EXT_0[])(void) = {
+// 0x0000
+  NOP,      ERR,      OUT,      BSET,     RST,      OUT,      BSET,     RST,
+  PLS,      PLF,      MC,       MCR,      RST_TC,   RST_D,    ERR,      END,
+// 0x0010
+  CJ,       ERR,      CALL,     ERR,      SRET,     ERR,      IRET,     ERR,
+  EI,       ERR,      DI,       ERR,      END,      ERR,      WDT,      ERR,
+  FOR,      ERR,      NEXT,     ERR,
+// 0x0024
+                                          CMP,      DCMP,     ZCP,      DZCP,
+  MOV,      DMOV,     SMOV,     ERR,      CML,      DCML,     BMOV,     ERR,
+  FMOV,     DFMOV,    XCH,      DXCH,     BCD,      DBCD,     BIN,      DBIN,
+// 0x0038
+  ADD,      DADD,     SUB,      DSUB,     MUL,      DMUL,     DIV,      DDIV,
+  INC,      DINC,     DEC,      DDEC,     WAND,     DWAND,    WOR,      DWOR,
+  WXOR,     DWXOR,    NEG,      DNEG,
+// 0x004C
+                                          ROR,      DROR,     ROL,      DROL,
+  RCR,      DRCR,     RCL,      DRCL,     SFTR,     ERR,      SFTL,     ERR,
+  WSFR,     ERR,      WSFL,     ERR,      SFWR,     ERR,      SFWL,     ERR,
+// 0x0060
+  ZRST,     ERR,      DECO,     ERR,      ENCO,     ERR,      SUM,      DSUM,
+  BON,      DBON,     MEAN,     DMEAN,    ANS,      ERR,      ANR,      ERR,
+  SQR,      DSQR,     FLT,      DFLT,
+// 0x0074
+                                          REF,      ERR,      REFF,     ERR,
+  MTR,      ERR,      DHSCS,    ERR,      DHSCR,    ERR,      DHSZ,     ERR,
+  SPD,      DSPD,     PLSY,     ERR,      PWM,      ERR,      PLSR,     ERR,
+// 0x0088
+  IST,      ERR,      SER,      DSER,     ABSD,     DABSD,    INCD,     ERR,
+  TTMR,     ERR,      STMR,     ERR,      ALT,      ERR,      RAMP,     ERR,
+  ROTS,     ERR,      SORT,     ERR,
+// 0x009C
+                                          TKY,      ERR,      HKY,      ERR,
+  DSW,      ERR,      SEGD,     ERR,      SEGL,     ERR,      ARWS,     ERR,
+  ASC,      ERR,      PR,       ERR,      FROM,     ERR,      TO,       ERR,
+// 0x00B0
+  RS,       ERR,      PRUN,     ERR,      ASCI,     ERR,      HEX,      ERR,
+  CCD,      ERR,      VRRD,     ERR,      VRSC,     ERR,      RS2,      ERR,
+  PID,      ERR,      ZPUSH,    ERR,
+// 0x00C4
+                                          ZPOP,     ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+// 0x00D8
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,
+// 0x00EC
+                                          ERR,      DECMP,    ERR,      DEZCP,
+  ERR,      DEMOV,    ERR,      DESTR,    ERR,      DEVAL,    ERR,      EBCD,
+  ERR,      EBIN,     ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+// 0x0100
+  ERR,      DEADD,    ERR,      DESUB,    ERR,      DEMUL,    ERR,      DEDIV,
+  ERR,      DEXP,     ERR,      DLOGE,    ERR,      DLOG10,   ERR,      DESQR,
+  ERR,      DENEG,    INT,      DINT,
+// 0x0114
+                                          ERR,      DSIN,     ERR,      DCOS,
+  ERR,      DTAN,     ERR,      DASIN,    ERR,      DACOS,    ERR,      DATAN,
+  ERR,      DRAD,     ERR,      DDEG,     ERR,      ERR,      ERR,      ERR,
+// 0x0128
+  ERR,      ERR,      ERR,      ERR,      WSUM,     DWSUM,    WTOB,     BTOW,
+  UNI,      DIS,      SWAP,     DSWAP,    SORT2,    DSORT2,   ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,
+// 0x013C
+                                          ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+// 0x0150
+  TCMP,     ERR,      TZCP,     ERR,      TADD,     ERR,      TSUB,     ERR,
+  HTOS,     ERR,      STOH,     ERR,      TRD,      ERR,      TWR,      ERR,
+  HOUR,     ERR,      ERR,      ERR, 
+// 0x0164
+                                          GRY,      DGRY,     GBIN,     DGBIN,
+  RD3A,     ERR,      WR3A,     ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+// 0x0178
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,
+// 0x018C
+                                          ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+// 0x01A0
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,
+// 0x01B4
+                                          ERR,      ERR,      ERR,      ERR,
+  ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,      ERR,
+// 0x01C0
+  ERR,      ERR,      LD,       LDI,      AND,      ANI,      OR,       ORI,
+  ERR,      ERR,      LDP,      LDF,      ANDP,     ANDF,     ORP,      ORF,
+// 0x01D0
+  LD_EQU,   DLD_EQU,  LD_GTR,   DLD_GTR,  LD_LSS,   DLD_LSS,  ERR,      ERR,
+  LD_NEQ,   DLD_NEQ,  LD_LEQ,   DLD_LEQ,  LD_GEQ,   DLD_GEQ,  ERR,      ERR,
+// 0x01E0
+  AND_EQU,  DAND_EQU, AND_GTR,  DAND_GTR, AND_LSS,  DAND_LSS, ERR,      ERR,
+  AND_NEQ,  DAND_NEQ, AND_LEQ,  DAND_LEQ, AND_GEQ,  DAND_GEQ, ERR,      ERR,
+// 0x01F0
+  OR_EQU,   DOR_EQU,  OR_GTR,   DOR_GTR,  OR_LSS,   DOR_LSS,  ERR,      ERR,
+  OR_NEQ,   DOR_NEQ,  OR_LEQ,   DOR_LEQ,  OR_GEQ,   DOR_GEQ,  ERR,      ERR
+};
+     
+/***************************************************FOR**************************************************/
+struct {
+  const u16 *Addr[7];  //FOR 地址记录
+  u16 cycle[7];        //当前循环的次数
+  u16 count[7];        //目标循环的次数
+  u8  point;           //for指向的点数  
+} FOR_CMD;
+
+/***************************************************STL**************************************************/
+static u32 PLC_STL_Addr;    //STL指令地址号
+static u8  PLC_STL_Status;    //STL指令当前状态 0整套程序没有STL状态，程序1为STL有状态，2为STL停止状态 
+static u8  PLC_STL_CMD;      //STL标志
+static u8  PLC_STL_Count;     //计数线圈数量
+static u16 PLC_STL_Coil[256]; //线圈缓存寄存器
+/********************************************************************************************************/
+//#define PLC_PL_BIT_ON(x)   ( Step_Address[(x)/8] |= PLC_BIT_OR[(x)%8] ) //写状态值为1     上升延与下降沿使用
+//#define PLC_PL_BIT_OFF(x)  ( Step_Address[(x)/8] &= PLC_BIT_AND[(x)%8] )//写步状态为0上升延与下降沿使用共2K字节1600bit
+//#define PLC_PL_BIT_TEST(x) ( Step_Address[(x)/8] &  PLC_BIT_OR[(x)%8] )
+//#define PLC_LD_BIT(x)      ( PLC_Bu(RAM_ADDR + ((x) / 8)) & PLC_BIT_OR[(x) % 8] )
+//#define PLC_LD_BIT(x)      (BB_SRAM( (SRAM_ADDR + ( (x) >> 3 )), ((x) & 7)) )
+
+u32 PLC_LD_BIT(u32 addr) {
+  return PLC_BIT_TEST1(addr);
+}
+
+u32 PLC_BIT_TEST(u32 addr) {
+  return PLC_BIT_TEST1(addr);
+}
+
+void PLC_BIT_ON(u32 addr) {
+  PLC_BIT_ON1(addr);
+}
+
+void PLC_BIT_OFF(u32 addr) {
+  PLC_BIT_OFF1(addr);
+}
+
+u32 PLC_PL_BIT_TEST(void) {
+  return PLC_PL_BIT_TEST1(CMD_ADDR);
+}
+
+void PLC_PL_BIT_ON(void) {
+  PLC_PL_BIT_ON1(CMD_ADDR);
+}
+
+void PLC_PL_BIT_OFF(void) {
+  PLC_PL_BIT_OFF1(CMD_ADDR);
+}
+
+u8 PLC_LDP_TEST(void) {
+  if ( PLC_PL_BIT_TEST() == 0 ) {
+    if ( PLC_ACC_BIT & 0x01 ) {
+      PLC_PL_BIT_ON();
+      return 1;
+    } else
+      return 0;
+  } else {
+    if ( !( PLC_ACC_BIT & 0x01 ) )
+      PLC_PL_BIT_OFF();
+    return 0;
+  } 
+}
+
+/*********************************************
+?? Function: PLC code error handler
+?? Err_id = 01: Instruction error (unrecognized instruction)
+?? Err_id = 02: Instruction error (not supporting command)
+?? Err_id = 10: Data error (data type not recognized)
+?? Err_id = 11: Data error (data read address is exceeded)
+?? Err_id = 12: Data error (index Z address unknown)
+?? Err_id = 13: Data error (indexed Z address exceeded)
+?? Err_id = 20: CJ instruction address error
+?? D8061, M8061 = PC hardware error
+?? D8063, M8063 = Link, communication error
+?? D8064, M8064 = Parameter error
+?? D8065, M8065 = Syntax error
+?? D8066, M8066 = Circuit error
+?? D8067, M8067 = Operation error
+?? D8068, M8068 = Operation error latch
+***********************************************/
+void PLC_PROG_ERROR(u16 err,u16 err_id) {
+  ERR_LED_ON;  
+// PLC_BIT_ON(err);                              //出错标志  小小晟 屏蔽
+  D8012 = 0;                                       //扫描时间
+  if ( D8068 == 0 ) {
+    D8067 = err_id;                      //语法错误
+//  if ( D8068 == 0 )
+    D8068 = PLC_Err - PLC_START_ADDR; //保存出错PC步
+  }
+  D8069 = D8068;
+}
+
+//=======================================================================================================
+//=======================================================================================================
+// GET_ADDR - 2 word
+//=======================================================================================================
+//=======================================================================================================
+u32 get_addr(void) {  
+u32 temp, temp1;
+
+  temp1 = *PLC_PC;
+  PLC_PC++;
+  temp = ( ( ( *PLC_PC & 0xFF ) << 8 ) | ( temp1 & 0xFF ) ) << 1;
+
+  if ( ( temp1 & 0xFF00 ) == 0x8400 )
+    Flag_bit = 0;
+  else if ( ( temp1 & 0xFF00 ) == 0x8600 )
+      switch ( *PLC_PC >> 8 ) {
+        case 0x80: temp += Addr_D8000; break;
+        case 0x82: temp += Addr_TVal;  break;
+        case 0x84: temp += Addr_CVal;  break;
+        case 0x86: temp += Addr_D0000; break;
+        case 0x88: temp += Addr_D1000; break;
+      }
+  PLC_PC++;
+  return temp;
+}
+//=======================================================================================================
+//=======================================================================================================
+//   1  80  80  K
+//   2  82  80  H
+//   3  84  80  X, Y, M, S, M8, C, T
+//   4  84  82  K1 4bit
+//   5  84  84  K2 8bit
+//   6  84  86  K3 12bit
+//   7  84  88  K4 16bit
+//   8  84  8A  K5 20bit
+//   9  84  8C  K6 24bit
+//  10  84  8E  K7 28bit
+//  11  84  90  K8 32bit
+//  12  86  80  D8xxx
+//  13  86  82  Txxx
+//  14  86  84  Cxxx
+//  15  86  86  Dxxx  D <1000
+//  16  86  88  Dxxxx D >1000
+//  17  88  80  Pxxx
+//  18  8A  80  ASCII CHAR
+//  19  90  80  KxxxxV
+//  20  94  82  K1(X,Y,M,S)V
+//  21  94  84  K2(X,Y,M,S)V
+//  22  94  86  K3(X,Y,M,S)V
+//  23  94  88  K4(X,Y,M,S)V
+//  24  94  8A  K5(X,Y,M,S)V
+//  25  94  8C  K6(X,Y,M,S)V
+//  26  94  8E  K7(X,Y,M,S)V
+//  27  94  90  K8(X,Y,M,S)V
+//  28  A4  82  K1(X,Y,M,S)Z
+//  29  A4  84  K2(X,Y,M,S)Z
+//  30  A4  86  K3(X,Y,M,S)Z
+//  31  A4  88  K4(X,Y,M,S)Z
+//  32  A4  8A  K5(X,Y,M,S)Z
+//  33  A4  8C  K6(X,Y,M,S)Z
+//  34  A4  8E  K7(X,Y,M,S)Z
+//  35  A4  90  K8(X,Y,M,S)Z
+//  36  A6  80  D8xxxZ
+//  37  A6  82  TxxxZ
+//  38  A6  84  CxxxZ
+//  39  A6  86  DxxxZ  D <1000
+//  40  A6  88  DxxxxZ D >1000
+//=======================================================================================================
+//=======================================================================================================
+ 
+void MOV_TO_K_H(u8 i, u32 data, u32 addr) { //进行 MOV ?? K?X&Y&S&M 地址计算
+u32 LL_BIT;                         //需要向左移动多少位用寄存器
+u32 tempAddr;
+int64_t tempData,tempData1,tempData2;  //移动32位数据
+
+  mov_d_addr |= addr << 8; 
+  mov_d_addr += Transfer;                      //成批传递和多点时 Transfer会有数据平时都是0
+  LL_BIT = mov_d_addr % 0x20;                     //需要移动多少位
+  tempAddr = (mov_d_addr / 0x20) * 4;              //所在的起始地址  
+  switch(i) {            //    移动位数　需要的数据做好处理            将数据移动需要的位数       后面要将数据取反用
+    case 0x82: tempData1 = data & 0x0000000F; tempData1 <<= LL_BIT; tempData2 = ~(0x0000000F << LL_BIT); break;//传送K1大小
+    case 0x84: tempData1 = data & 0x000000FF; tempData1 <<= LL_BIT; tempData2 = ~(0x000000FF << LL_BIT); break;//传送K2大小
+    case 0x86: tempData1 = data & 0x00000FFF; tempData1 <<= LL_BIT; tempData2 = ~(0x00000FFF << LL_BIT); break;//传送K3大小
+    case 0x88: tempData1 = data & 0x0000FFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x0000FFFF << LL_BIT); break;//传送K4大小
+    case 0x8A: tempData1 = data & 0x000FFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x000FFFFF << LL_BIT); break;//传送K5大小
+    case 0x8C: tempData1 = data & 0x00FFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x00FFFFFF << LL_BIT); break;//传送K6大小
+    case 0x8E: tempData1 = data & 0x0FFFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0x0FFFFFFF << LL_BIT); break;//传送K7大小
+    case 0x90: tempData1 = data & 0XFFFFFFFF; tempData1 <<= LL_BIT; tempData2 = ~(0XFFFFFFFF << LL_BIT); break;//传送K8大小
+    default: PLC_PC += 3; break;  //遇到不支持的命令
+  }                                          
+  tempData  = PLC_Du(RAM_ADDR + tempAddr);
+  tempData &= tempData2;             //将需要传送的位置清空 
+  tempData |= tempData1;        //传入需要到的位置   
+  PLC_Du(RAM_ADDR + tempAddr) = tempData;  //将数据传到目标位置
+}
+ 
+
+signed int MOV_K(void) {               //进行K?X&Y&S&M计算
+u32 LL_BIT, tempAddr;                   //需要向左移动多少位用寄存器
+uint64_t tempData;               //移动64位数据
+
+//  mov_d_addr |= Addr << 8;                    
+  mov_d_addr += Transfer;                         //成批传递和多点时 Transfer会有数据平时都是0
+  LL_BIT = mov_d_addr & 0x1F;                        //需要移动多少位
+  tempAddr = (mov_d_addr >> 5) << 2;                 //所在的起始地址                 
+  tempData = PLC_Du(RAM_ADDR + tempAddr),
+  tempData >>= LL_BIT;                    
+  return (signed int)tempData;
+}
+
+//=======================================================================================================
+// -----------------------------------------------------------
+//=======================================================================================================
+u32 addr_value_prog(void) {  
+u32 temp; 
+u32 type_of, temp1, temp2;
+
+  temp1 = *PLC_PC;
+  PLC_PC++;
+  temp2 = *PLC_PC;
+
+  type_of  = (temp1 & 0xFF00) | (temp2 >> 8);
+
+  mov_d_addr = ( (temp2 & 0x00FF) << 8 ) | (temp1 & 0xFF);
+  temp2 = mov_d_addr << 1;
+
+  if      ( type_of == 0x8680 ) {temp = RAM_D8000_ADDR + temp2;            } //算出D的地址 D8000
+  else if ( type_of == 0x8682 ) {temp = RAM_T_ADDR + temp2;                } //算出T的地址 
+  else if ( type_of == 0x8684 ) {temp = RAM_C_ADDR + temp2;                } //算出C的地址
+  else if ( type_of == 0x8686 ) {temp = RAM_D0000_ADDR + temp2;            } //算出D的地址 
+  else if ( type_of == 0x8688 ) {temp = RAM_D1000_ADDR + temp2;            } //大于等于D1000
+
+  else if ( type_of == 0x8482 ) {temp = MOV_K() & 0x0000000F; Flag_bit = 0;} //进行如 K4M0 之类的传送    
+  else if ( type_of == 0x8484 ) {temp = MOV_K() & 0x000000FF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
+  else if ( type_of == 0x8486 ) {temp = MOV_K() & 0x00000FFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
+  else if ( type_of == 0x8488 ) {temp = MOV_K() & 0x0000FFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
+  else if ( type_of == 0x848A ) {temp = MOV_K() & 0x000FFFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
+  else if ( type_of == 0x848C ) {temp = MOV_K() & 0x00FFFFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
+  else if ( type_of == 0x848E ) {temp = MOV_K() & 0x0FFFFFFF; Flag_bit = 0;} //进行如 K4M0 之类的传送    
+  else if ( type_of == 0x8490 ) {temp = MOV_K();              Flag_bit = 0;} //进行如 K4M0 之类的传送  
+  PLC_PC++;
+  return temp;
+}
+
+//// -- V0 = 00xxxxxx V1 = 01xxxxxx V2 = 10xxxxxx V3 = 11xxxxxx
+
+u16 V0_V3(u16 temp) {
+//u32 temp = PLC_v_z_addr(temp1);
+
+  if      ( temp == 0 ) return D8029;
+  else if ( temp == 1 ) return D8183;
+  else if ( temp == 2 ) return D8185;
+  else if ( temp == 3 ) return D8187;
+  else return 0;
+}
+
+u16 V4_V7(u16 temp) {
+//u32 temp = PLC_v_z_addr(temp1);
+
+  if      ( temp == 0 ) return D8189;
+  else if ( temp == 1 ) return D8191;
+  else if ( temp == 2 ) return D8193;
+  else if ( temp == 3 ) return D8195;
+  else return 0;
+}
+
+u16 Z0_Z3(u16 temp) {
+//u32 temp = PLC_v_z_addr(temp1);
+
+  if      ( temp == 0 ) return D8028;
+  else if ( temp == 1 ) return D8182;
+  else if ( temp == 2 ) return D8184;
+  else if ( temp == 3 ) return D8186;
+  else return 0;
+}
+
+u16 Z4_Z7(u16 temp) {
+//u32 temp = PLC_v_z_addr(temp1);
+
+  if      ( temp == 0 ) return D8188;
+  else if ( temp == 1 ) return D8190;
+  else if ( temp == 2 ) return D8192;
+  else if ( temp == 3 ) return D8194;
+  else return 0;
+}
+
+u32 DZ0_Z3(u16 temp) {
+//u32 temp = PLC_v_z_addr(temp1);
+
+  if      ( temp == 0 ) return (D8029 << 16) + D8028;
+  else if ( temp == 1 ) return (D8183 << 16) + D8182;
+  else if ( temp == 2 ) return (D8184 << 16) + D8184;
+  else if ( temp == 3 ) return (D8185 << 16) + D8186;
+  else return 0;
+}
+
+u32 DZ4_Z7(u16 temp) {
+//u32 temp = PLC_v_z_addr(temp1);
+
+  if      ( temp == 0 ) return (D8189 << 16) + D8188;
+  else if ( temp == 1 ) return (D8191 << 16) + D8190;
+  else if ( temp == 2 ) return (D8193 << 16) + D8192;
+  else if ( temp == 3 ) return (D8193 << 16) + D8194;
+  else return 0;
+}
+
+//=======================================================================================================
+s16 get_value() {  
+s32 temp; 
+u32 type_of, temp1, temp2, temp3, temp4;
+
+  temp1 = *PLC_PC;
+  PLC_PC++;
+  temp2 = *PLC_PC;
+
+  type_of  = (temp1 & 0xFF00) | (temp2 >> 8);
+
+  mov_d_addr = ( (temp2 & 0x00FF) << 8 ) | (temp1 & 0xFF);
+  temp2 = mov_d_addr;
+
+//  mov_d_addr = temp1 & 0xFF;
+//  temp2 = (temp2 << 8) | mov_d_addr;
+
+  temp3 = PLC_v_z_addr(temp2);
+  temp4 = PLC_D_C_T_addr(temp2) >> 8;
+
+  switch(type_of) {
+    case  0x8080: temp = temp2; break;  //算出K值
+    case  0x8280: temp = temp2; break;  //算出H值
+
+    case  0x8482: temp = MOV_K()&0x0000000F; bitT_get = 1; break; //进行如 K4M0 之类的传送    
+    case  0x8484: temp = MOV_K()&0x000000FF; bitT_get = 1; break; //进行如 K4M0 之类的传送    
+    case  0x8486: temp = MOV_K()&0x00000FFF; bitT_get = 1; break; //进行如 K4M0 之类的传送    
+    case  0x8488: temp = MOV_K()&0x0000FFFF; bitT_get = 1; break; //进行如 K4M0 之类的传送      
+
+    case  0x8680: temp = PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ); break; //算出D的地址 D8000
+    case  0x8682: temp = PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ); break; //算出T的地址 
+    case  0x8684: temp = PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ); break; //算出C的地址
+    case  0x8686: temp = PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ); break; //算出D的地址 
+    case  0x8688: temp = PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ); break; //大于等于D1000
+    /************************************************K寄存器"V"*******************************************************************/
+    case  0x9080: temp = temp2 + D8029; break; //算出K的地址，的V0
+    case  0x9081: temp = temp2 + D8183; break; //算出K的地址，的V1
+    case  0x9082: temp = temp2 + D8185; break; //算出K的地址，的V2
+    case  0x9083: temp = temp2 + D8187; break; //算出K的地址，的V3
+    case  0x9084: temp = temp2 + D8189; break; //算出K的地址，的V4
+    case  0x9085: temp = temp2 + D8191; break; //算出K的地址，的V5
+    case  0x9086: temp = temp2 + D8193; break; //算出K的地址，的V6
+    case  0x9087: temp = temp2 + D8195; break; //算出K的地址，的V7
+
+    case  0x9280: temp = temp2 + D8029; break; //算出H的地址，的V0
+    case  0x9281: temp = temp2 + D8183; break; //算出H的地址，的V1
+    case  0x9282: temp = temp2 + D8185; break; //算出H的地址，的V2
+    case  0x9283: temp = temp2 + D8187; break; //算出H的地址，的V3
+    case  0x9284: temp = temp2 + D8189; break; //算出H的地址，的V4
+    case  0x9285: temp = temp2 + D8191; break; //算出H的地址，的V5
+    case  0x9286: temp = temp2 + D8193; break; //算出H的地址，的V6
+    case  0x9287: temp = temp2 + D8195; break; //算出H的地址，的V7   
+    /************************************************K1M0寄存器"V"*******************************************************************/
+    case  0x9482: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V0-V3  
+    case  0x9483: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V4-V7  
+    /************************************************K2M0寄存器"V"*******************************************************************/
+    case  0x9484: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V0-V3  
+    case  0x9485: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V4-V7    
+    /***********************************3************K3M0寄存器"V"*******************************************************************/
+    case  0x9486: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V0-V3  
+    case  0x9487: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V4-V7    
+    /************************************************K4M0寄存器"V"*******************************************************************/
+    case  0x9488: mov_d_addr += V0_V3(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V0-V3  
+    case  0x9489: mov_d_addr += V4_V7(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V4-V7            
+
+    case  0x9682: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//算出T的地址，的V0-V3
+    case  0x9683: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//算出T的地址，的V4-V7
+    case  0x9684: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//算出C的地址，的V0-V3
+    case  0x9685: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//算出C的地址，的V4-V7
+
+    case  0x9686: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//算出D的地址，的V0-V3
+    case  0x9687: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//算出D的地址，的V4-V7
+    case  0x9688: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2);break;//大于等于D1000的V0-V3
+    case  0x9689: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2);break;//大于等于D1000的V4-V7
+  
+    case  0xA080: temp = temp2 + D8028; break; //算出K的地址，的Z0
+    case  0xA081: temp = temp2 + D8182; break; //算出K的地址，的Z1
+    case  0xA082: temp = temp2 + D8184; break; //算出K的地址，的Z2
+    case  0xA083: temp = temp2 + D8186; break; //算出K的地址，的Z3
+    case  0xA084: temp = temp2 + D8188; break; //算出K的地址，的Z4
+    case  0xA085: temp = temp2 + D8190; break; //算出K的地址，的Z5
+    case  0xA086: temp = temp2 + D8192; break; //算出K的地址，的Z6
+    case  0xA087: temp = temp2 + D8194; break; //算出K的地址，的Z7   
+
+    case  0xA280: temp = temp2 + D8028; break; //算出H的地址，的Z0
+    case  0xA281: temp = temp2 + D8182; break; //算出H的地址，的Z1
+    case  0xA282: temp = temp2 + D8184; break; //算出H的地址，的Z2
+    case  0xA283: temp = temp2 + D8186; break; //算出H的地址，的Z3
+    case  0xA284: temp = temp2 + D8188; break; //算出H的地址，的Z4
+    case  0xA285: temp = temp2 + D8190; break; //算出H的地址，的Z5
+    case  0xA286: temp = temp2 + D8192; break; //算出H的地址，的Z6
+    case  0xA287: temp = temp2 + D8194; break; //算出H的地址，的Z7   
+    /************************************************K1M0寄存器"Z"*******************************************************************/
+    case  0xA482: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V0-V3  
+    case  0xA483: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x0000000F;break;//K1M0的V4-V7  
+    /************************************************K2M0寄存器"Z"*******************************************************************/
+    case  0xA484: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V0-V3  
+    case  0xA485: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x000000FF;break;//K2M0的V4-V7    
+    /************************************************K3M0寄存器"Z"*******************************************************************/
+    case  0xA486: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V0-V3  
+    case  0xA487: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x00000FFF;break;//K3M0的V4-V7    
+    /************************************************K4M0寄存Z"*******************************************************************/
+    case  0xA488: mov_d_addr += Z0_Z3(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V0-V3
+    case  0xA489: mov_d_addr += Z4_Z7(temp3); temp = MOV_K()&0x0000FFFF;break;//K4M0的V4-V7    
+
+    case  0xA682: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//算出T的地址，的Z0-Z3
+    case  0xA683: temp = PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//算出T的地址，的Z4-Z7
+    case  0xA684: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//算出C的地址，的Z0-Z3
+    case  0xA685: temp = PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//算出C的地址，的Z4-Z7
+
+    case  0xA686: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//算出D的地址，的Z0-Z3
+    case  0xA687: temp = PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//算出D的地址，的Z4-Z7
+    case  0xA688: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2);break;//大于等于D1000的Z0-Z3
+    case  0xA689: temp = PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2);break;//大于等于D1000的Z4-Z7
+  }  
+  PLC_PC++;
+  return temp;
+}
+//=======================================================================================================
+#ifdef USE_DOUBLE
+s32 get_valueD(void) {   
+u32 type_of, temp1, temp2, temp3, temp4;
+u32 temp;
+s32_union tempD;
+
+  temp1 = *PLC_PC;
+  PLC_PC++;
+  temp2 = *PLC_PC;
+
+  type_of  = (temp1 & 0xFF00) | (temp2 >> 8);
+
+  mov_d_addr = ( (temp2 & 0x00FF) << 8 ) | (temp1 & 0xFF);
+  temp2 = mov_d_addr;
+
+//  mov_d_addr = temp1 & 0xFF;
+//  temp2 = (temp2 << 8) | mov_d_addr;
+
+  temp3 = PLC_v_z_addr(temp2);
+  temp4 = PLC_D_C_T_addr(temp2) >> 8;
+
+  switch ( type_of ) {    
+    case  0x8080: tempD.d16[0] = temp2; PLC_PC++; tempD.d16[1] = get_value(); PLC_PC -= 2; break;//算出K值
+    case  0x8280: tempD.d16[0] = temp2; PLC_PC++; tempD.d16[1] = get_value(); PLC_PC -= 2; break;//算出H值
+
+    case  0x8482: tempD.d32 = MOV_K()&0x0000000F; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
+    case  0x8484: tempD.d32 = MOV_K()&0x000000FF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
+    case  0x8486: tempD.d32 = MOV_K()&0x00000FFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
+    case  0x8488: tempD.d32 = MOV_K()&0x0000FFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
+    case  0x848A: tempD.d32 = MOV_K()&0x000FFFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
+    case  0x848C: tempD.d32 = MOV_K()&0x00FFFFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
+    case  0x848E: tempD.d32 = MOV_K()&0x0FFFFFFF; bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送    
+    case  0x8490: tempD.d32 = MOV_K();            bitT_get = 1; PLC_PC++; break; //进行如 K4M0 之类的传送   
+      
+    case  0x8680: tempD.d32 = PLC_Ws(RAM_D8000_ADDR + temp2 << 1); PLC_PC++; break;                 //算出D的地址 D8000
+    case  0x8682: tempD.d32 = PLC_Ws(RAM_T_ADDR     + temp2 << 1); PLC_PC++; break;                 //算出T的地址 
+    case  0x8684: tempD.d32 = PLC_Ws(RAM_C_ADDR     + temp2 << 1); PLC_PC++; break;                 //算出C的地址
+    case  0x8686: tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp2 << 1); PLC_PC++; break;                 //算出D的地址 
+    case  0x8688: tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp2 << 1); PLC_PC++; break;                 //大于等于D1000
+
+    case  0xA080: tempD.d16[0] = temp2 + D8028; PLC_PC++; tempD.d16[1] = get_value() + D8029; PLC_PC -= 2; break; //算出K的地址，的Z0
+    case  0xA081: tempD.d16[0] = temp2 + D8182; PLC_PC++; tempD.d16[1] = get_value() + D8183; PLC_PC -= 2; break; //算出K的地址，的Z1
+    case  0xA082: tempD.d16[0] = temp2 + D8184; PLC_PC++; tempD.d16[1] = get_value() + D8185; PLC_PC -= 2; break; //算出K的地址，的Z2
+    case  0xA083: tempD.d16[0] = temp2 + D8186; PLC_PC++; tempD.d16[1] = get_value() + D8187; PLC_PC -= 2; break; //算出K的地址，的Z3
+    case  0xA084: tempD.d16[0] = temp2 + D8188; PLC_PC++; tempD.d16[1] = get_value() + D8189; PLC_PC -= 2; break; //算出K的地址，的Z4
+    case  0xA085: tempD.d16[0] = temp2 + D8190; PLC_PC++; tempD.d16[1] = get_value() + D8191; PLC_PC -= 2; break; //算出K的地址，的Z5
+    case  0xA086: tempD.d16[0] = temp2 + D8192; PLC_PC++; tempD.d16[1] = get_value() + D8193; PLC_PC -= 2; break; //算出K的地址，的Z6
+    case  0xA087: tempD.d16[0] = temp2 + D8194; PLC_PC++; tempD.d16[1] = get_value() + D8195; PLC_PC -= 2; break; //算出K的地址，的Z7 
+
+    case  0xA280: tempD.d16[0] = temp2 + D8028; PLC_PC++; tempD.d16[1] = get_value() + D8029; PLC_PC -= 2; break; //算出H的地址，的Z0
+    case  0xA281: tempD.d16[0] = temp2 + D8182; PLC_PC++; tempD.d16[1] = get_value() + D8183; PLC_PC -= 2; break; //算出H的地址，的Z1
+    case  0xA282: tempD.d16[0] = temp2 + D8184; PLC_PC++; tempD.d16[1] = get_value() + D8185; PLC_PC -= 2; break; //算出H的地址，的Z2
+    case  0xA283: tempD.d16[0] = temp2 + D8186; PLC_PC++; tempD.d16[1] = get_value() + D8187; PLC_PC -= 2; break; //算出H的地址，的Z3
+    case  0xA284: tempD.d16[0] = temp2 + D8188; PLC_PC++; tempD.d16[1] = get_value() + D8189; PLC_PC -= 2; break; //算出H的地址，的Z4
+    case  0xA285: tempD.d16[0] = temp2 + D8190; PLC_PC++; tempD.d16[1] = get_value() + D8191; PLC_PC -= 2; break; //算出H的地址，的Z5
+    case  0xA286: tempD.d16[0] = temp2 + D8192; PLC_PC++; tempD.d16[1] = get_value() + D8193; PLC_PC -= 2; break; //算出H的地址，的Z6
+    case  0xA287: tempD.d16[0] = temp2 + D8194; PLC_PC++; tempD.d16[1] = get_value() + D8195; PLC_PC -= 2; break; //算出H的地址，的Z7         
+    /************************************************K1M0寄存器"Z"*******************************************************************/
+    case  0xA482: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0000000F; PLC_PC++; break;//K1M0的V0-V3  
+    case  0xA483: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0000000F; PLC_PC++; break;//K1M0的V4-V7  
+    /************************************************K2M0寄存器"Z"*****************************************************************/
+    case  0xA484: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x000000FF; PLC_PC++; break;//K2M0的V0-V3  
+    case  0xA485: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x000000FF; PLC_PC++; break;//K2M0的V4-V7    
+    /************************************************K3M0寄存器"Z"*******************************************************************/
+    case  0xA486: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x00000FFF; PLC_PC++; break;//K3M0的V0-V3  
+    case  0xA487: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x00000FFF; PLC_PC++; break;//K3M0的V4-V7    
+    /************************************************K4M0寄存器"Z"*******************************************************************/
+    case  0xA488: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0000FFFF; PLC_PC++; break;//K4M0的V0-V3
+    case  0xA489: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0000FFFF; PLC_PC++; break;//K4M0的V4-V7    
+    /************************************************K5M0寄存器"Z"*******************************************************************/
+    case  0xA48A: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x000FFFFF; PLC_PC++; break;//K1M0的V0-V3  
+    case  0xA48B: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x000FFFFF; PLC_PC++; break;//K1M0的V4-V7  
+    /************************************************K6M0寄存器"Z"*******************************************************************/
+    case  0xA48C: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x00FFFFFF; PLC_PC++; break;//K2M0的V0-V3  
+    case  0xA48D: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x00FFFFFF; PLC_PC++; break;//K2M0的V4-V7    
+    /************************************************K7M0寄存器"Z"*******************************************************************/
+    case  0xA48E: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K()&0x0FFFFFFF; PLC_PC++; break;//K3M0的V0-V3  
+    case  0xA48F: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K()&0x0FFFFFFF; PLC_PC++; break;//K3M0的V4-V7    
+    /************************************************K8M0寄存器"Z"*******************************************************************/
+    case  0xA490: mov_d_addr += DZ0_Z3(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0的V0-V3
+    case  0xA491: mov_d_addr += DZ4_Z7(temp3); tempD.d32 = MOV_K(); PLC_PC++; break;//K4M0的V4-V7  
+    /************************************************T寄存器"Z"*******************************************************************/
+    case  0xA682: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//算出T的地址，的Z0-Z3
+    case  0xA683: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_T_ADDR + temp << 1); PLC_PC++;} break;//算出T的地址，的Z4-Z7
+    /************************************************C寄存器"Z"*******************************************************************/
+    case  0xA684: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//算出C的地址，的Z0-Z3
+    case  0xA685: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 510)   {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_C_ADDR + temp << 1); PLC_PC++;} break;//算出C的地址，的Z4-Z7
+    /************************************************D寄存器"Z"*******************************************************************/
+    case  0xA686: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//算出D的地址，的Z0-Z3
+    case  0xA687: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 15998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D0000_ADDR + temp << 1); PLC_PC++;} break;//算出D的地址，的Z4-Z7
+    case  0xA688: temp = (PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//大于等于D1000的Z0-Z3
+    case  0xA689: temp = (PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2; if (temp >= 13998) {PLC_PROG_ERROR(M8067,6706); tempD.d32=0;} else {tempD.d32 = PLC_Ws(RAM_D1000_ADDR + temp << 1); PLC_PC++;} break;//大于等于D1000的Z4-Z7      
+  }
+  PLC_PC += 2;
+  return tempD.d32;
+}
+#endif
+//=======================================================================================================
+void put_value(void) {  
+u32 type_of, temp1, temp2, temp3, temp4;
+
+  temp1 = *PLC_PC;
+  PLC_PC++;
+  temp2 = *PLC_PC;
+
+  type_of  = (temp1 & 0xFF00) | (temp2 >> 8);
+
+  mov_d_addr = temp1 & 0xFF;
+  temp2 = (temp2 << 8) | mov_d_addr;
+
+  value &= 0xFFFF;
+
+  temp3 = PLC_v_z_addr(temp2);
+  temp4 = PLC_D_C_T_addr(temp2) >> 8;
+
+  switch(type_of) {
+    case  0x8482: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case  0x8484: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case  0x8486: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case  0x8488: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    
+    case  0x8680: PLC_Hs(RAM_D8000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出D的地址 D8000
+    case  0x8682: PLC_Hs(RAM_T_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出T的地址 
+    case  0x8684: PLC_Hs(RAM_C_ADDR     + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出C的地址
+    case  0x8686: PLC_Hs(RAM_D0000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //算出D的地址 
+    case  0x8688: PLC_Hs(RAM_D1000_ADDR + ( temp2 + Transfer) << 1 ) = (u16)value; PLC_PC++; break; //大于等于D1000
+    /************************************************K1M0寄存器"V"*******************************************************************/
+    case  0x9482: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V0-V3  
+    case  0x9483: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V4-V7  
+    /************************************************K2M0寄存器"V"*******************************************************************/
+    case  0x9484: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V0-V3  
+    case  0x9485: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V4-V7    
+    /************************************************K3M0寄存器"V"**************************************************************/
+    case  0x9486: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V0-V3  
+    case  0x9487: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V4-V7    
+    /************************************************K4M0寄存器"V"**************************************************************/
+    case  0x9488: mov_d_addr += V0_V3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V0-V3  
+    case  0x9489: mov_d_addr += V4_V7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V4-V7            
+
+    case  0x9682: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出T的地址，的V0-V3
+    case  0x9683: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出T的地址，的V4-V7
+    case  0x9684: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的V0-V3
+    case  0x9685: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的V4-V7
+
+    case  0x9686: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的V0-V3
+    case  0x9687: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的V4-V7
+    case  0x9688: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V0_V3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的V0-V3
+    case  0x9689: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + V4_V7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的V4-V7
+    /************************************************K1M0寄存器"Z"*******************************************************************/
+    case  0xA482: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V0-V3  
+    case  0xA483: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K1M0的V4-V7  
+    /************************************************K2M0寄存器"Z"**************************************************************/
+    case  0xA484: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V0-V3  
+    case  0xA485: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K2M0的V4-V7    
+    /************************************************K3M0寄存器"Z"**************************************************************/
+    case  0xA486: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V0-V3  
+    case  0xA487: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K3M0的V4-V7    
+    /************************************************K4M0寄存器"Z"**************************************************************/
+    case  0xA488: mov_d_addr += Z0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V0-V3
+    case  0xA489: mov_d_addr += Z4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++; break;//K4M0的V4-V7      
+
+    case  0xA682: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z0-Z3
+    case  0xA683: PLC_Hs(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z4-Z7
+    case  0xA684: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z0-Z3
+    case  0xA685: PLC_Hs(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出C的地址，的Z4-Z7
+
+    case  0xA686: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的Z0-Z3
+    case  0xA687: PLC_Hs(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//算出D的地址，的Z4-Z7
+    case  0xA688: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z0_Z3(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的Z0-Z3
+    case  0xA689: PLC_Hs(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + Z4_Z7(temp3) ) * 2) = (u16)value; PLC_PC++; break;//大于等于D1000的Z4-Z7
+    }
+}
+//=======================================================================================================
+#ifdef USE_DOUBLE
+void put_valueD(void) {  
+u32 type_of, temp1, temp2, temp3, temp4;
+
+  temp1 = *PLC_PC;
+  PLC_PC++;
+  temp2 = *PLC_PC;
+
+  type_of  = (temp1 & 0xFF00) | (temp2 >> 8);
+
+  mov_d_addr = temp1 & 0xFF;
+  temp2 = (temp2 << 8) | mov_d_addr;
+
+  temp3 = PLC_v_z_addr(temp2);
+  temp4 = PLC_D_C_T_addr(temp2) >> 8;
+
+  switch(type_of) {
+    case 0x8482: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case 0x8484: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case 0x8486: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case 0x8488: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case 0x848A: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case 0x848C: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case 0x848E: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送    
+    case 0x8490: MOV_TO_K_H(type_of, value, *PLC_PC); PLC_PC++; bitT_put = 1; break; //进行如 K4M0 之类的传送     
+    
+    case 0x8680: PLC_Ws(RAM_D8000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出D的地址 D8000
+    case 0x8682: PLC_Ws(RAM_T_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出T的地址 
+    case 0x8684: PLC_Ws(RAM_C_ADDR     + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出C的地址
+    case 0x8686: PLC_Ws(RAM_D0000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //算出D的地址 
+    case 0x8688: PLC_Ws(RAM_D1000_ADDR + ( temp2 + Transfer ) << 1 ) = value, PLC_PC++; break; //大于等于D1000
+    /************************************************K1M0寄存器"Z"*******************************************************************/
+    case 0xA482: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0的V0-V3  
+    case 0xA483: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K1M0的V4-V7  
+    /************************************************K2M0寄存器"Z"*******************************************************************/
+    case 0xA484: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K2M0的V0-V3  
+    case 0xA485: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K2M0的V4-V7    
+    /************************************************K3M0寄存器"Z"*******************************************************************/
+    case 0xA486: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K3M0的V0-V3  
+    case 0xA487: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K3M0的V4-V7    
+    /************************************************K4M0寄存器"Z"*******************************************************************/
+    case 0xA488: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K4M0的V0-V3
+    case 0xA489: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K4M0的V4-V7    
+    /************************************************K5M0寄存器"Z"*******************************************************************/
+    case 0xA48A: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K5M0的V0-V3  
+    case 0xA48B: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K5M0的V4-V7    
+    /************************************************K6M0寄存器"Z"*******************************************************************/
+    case 0xA48C: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K6M0的V0-V3  
+    case 0xA48D: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K6M0的V4-V7    
+    /************************************************K7M0寄存器"Z"*******************************************************************/
+    case 0xA48E: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K7M0的V0-V3  
+    case 0xA48F: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K7M0的V4-V7    
+    /************************************************K8M0寄存器"Z"*******************************************************************/
+    case 0xA490: mov_d_addr += DZ0_Z3(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//k8M0的V0-V4  
+    case 0xA491: mov_d_addr += DZ4_Z7(temp3); MOV_TO_K_H(type_of, value, temp4); PLC_PC++;break;//K8M0的V4-V7      
+    /************************************************T寄存器"Z"*******************************************************************/
+    case 0xA682: PLC_Ws(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//算出T的地址，的Z0-Z3
+    case 0xA683: PLC_Ws(RAM_T_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//算出T的地址，的Z4-Z7
+    case 0xA684: PLC_Ws(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//算出C的地址，的Z0-Z3
+    case 0xA685: PLC_Ws(RAM_C_ADDR     + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//算出C的地址，的Z4-Z7
+
+    case 0xA686: PLC_Ws(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//算出D的地址，的Z0-Z3
+    case 0xA687: PLC_Ws(RAM_D0000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//算出D的地址，的Z4-Z7
+    case 0xA688: PLC_Ws(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ0_Z3(temp3) ) * 2) = value; PLC_PC++;break;//大于等于D1000的Z0-Z3
+    case 0xA689: PLC_Ws(RAM_D1000_ADDR + ( PLC_D_C_T_addr(temp2) + DZ4_Z7(temp3) ) * 2) = value; PLC_PC++;break;//大于等于D1000的Z4-Z7
+  }
+  PLC_PC += 2;
+}
+#endif
+//=======================================================================================================
+#ifdef USE_FLOAT
+float get_valueF(void) {  
+u32 type_of, temp1, temp2, temp3; // Data1, Data2, Data3, Data4;
+float_union tempF;
+
+  temp1 = *PLC_PC;
+  PLC_PC++;
+  temp3 = *PLC_PC;
+  PLC_PC++;
+
+  type_of = (temp1 & 0xFF00) | (temp3 >> 8);
+
+  temp1  = (temp3 << 8) | (temp1 & 0xFF);
+
+  temp3 = *PLC_PC;
+  PLC_PC++;
+  temp2 = *PLC_PC;
+  PLC_PC++;
+
+  temp2  = (temp2 << 8) | (temp3 & 0xFF);
+
+  if      (type_of == 0x8080) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //算出K值
+  else if (type_of == 0x8280) {tempF.d16[0] = temp1; tempF.d16[1] = temp2;} //算出H值            
+  else if (type_of == 0x8680) {tempF.data = PLC_Wf(RAM_D8000_ADDR + temp1 << 1);} //算出D的地址 D8000
+  else if (type_of == 0x8682) {tempF.data = PLC_Wf(RAM_T_ADDR     + temp1 << 1);} //算出T的地址 
+  else if (type_of == 0x8684) {tempF.data = PLC_Wf(RAM_C_ADDR     + temp1 << 1);} //算出C的地址
+  else if (type_of == 0x8686) {tempF.data = PLC_Wf(RAM_D0000_ADDR + temp1 << 1);} //算出D的地址 
+  else if (type_of == 0x8688) {tempF.data = PLC_Wf(RAM_D1000_ADDR + temp1 << 1);} //大于等于D1000
+  return tempF.data;
+}
+
+void put_valueF(void) { 
+u32 temp;
+
+  temp = get_addr();
+  PLC_16BIT(temp)     = FLOAT.d16[0];
+  PLC_16BIT(temp + 2) = FLOAT.d16[1];
+//  PLC_PC += 2;
+}
+#endif
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+void timer_enable(u32 timer_number) {     
+
+  if ( PLC_16BIT(Addr_TVal + timer_number * 2) < PLC_16BIT(Addr_TMax + timer_number * 2) ) {
+    if ( PLC_BIT_TEST(AddrB_TO + timer_number) )
+      PLC_BIT_ON(AddrB_Tx + timer_number);             //Reset coil
+    else {
+      PLC_BIT_OFF(AddrB_TO + timer_number);      //OFF when the value is less than the set value
+      if ( PLC_BIT_TEST(AddrB_Tx + timer_number) ) {
+        PLC_16BIT(Addr_TVal + timer_number * 2) = 0;
+        PLC_BIT_OFF(AddrB_Tx + timer_number);
+      }
+    }
+  } else
+    PLC_BIT_ON(AddrB_TO + timer_number);         //ON when the value reaches the set value
+}
+
+void timer_disble(u32 timer_number) {     
+
+  PLC_16BIT(Addr_TVal + timer_number * 2) = 0;
+  PLC_16BIT(Addr_TMax + timer_number * 2) = 0;
+  PLC_BIT_OFF(AddrB_TO + timer_number);
+  PLC_BIT_OFF(AddrB_TE + timer_number);
+  PLC_BIT_OFF(AddrB_Tx + timer_number);
+}
+//=======================================================================================================
+void FUNC_TIMER(void) {
+u32 temp, tempV, tempN;
+
+  tempN = CMD_REG & 0x00FF;
+  CMD_REG = AddrB_TE * 8 + tempN;
+  PLC_PC++;
+  temp = *PLC_PC;
+  switch ( temp >> 8) { 
+    case 0x80: //// K
+      if ( PLC_ACC_BIT & 0x01 ) {
+        tempV = temp & 0x00FF;
+        PLC_PC++;
+        tempV += (*PLC_PC & 0x00FF) << 8;
+
+        PLC_16BIT(Addr_TMax + tempN * 2) = tempV;
+        timer_enable(tempN);
+        OUT();
+      } else {
+        PLC_PC++;
+        timer_disble(tempN);
+        OUT();   //disable T coil    1600 / 8 = 2C0
+        CMD_REG = AddrB_TO * 8 + tempN;
+        OUT();   //reset T over coil  600 / 8 = C0
+      }
+
+      break;
+    case 0x86: //// D
+      if ( PLC_ACC_BIT & 0x01 ) {
+        tempV = (temp & 0x00FF) >> 1;
+        PLC_PC++;
+        tempV += (*PLC_PC & 0x00FF) << 7;
+        if ( (*PLC_PC >> 8) == 0x88 )
+          tempV += 1000; 
+        PLC_16BIT(Addr_TMax + tempN * 2) = PLC_16BIT(Addr_D0000 + tempV * 2);
+        timer_enable(temp);
+        OUT();
+      } else {
+        PLC_PC++;
+        timer_disble(tempN);
+        OUT();   //disable T coil    1600 / 8 = 2C0
+        CMD_REG = AddrB_TO * 8 + tempN;
+        OUT();   //reset T over coil  600 / 8 = C0
+      }
+
+      break;
+  }  
+}
+//=======================================================================================================
+//=======================================================================================================
+void FUNC_COUNTER() {
+u32 temp, tempV;
+u32 C;
+
+  temp = CMD_REG & 0x00FF;
+  PLC_PC++;
+  switch (*PLC_PC >> 8) {
+    case 0x80:
+      if ( PLC_ACC_BIT & 0x01 ) {
+//        enable_C_K();
+        tempV = *PLC_PC & 0x00FF;
+        PLC_PC++;
+        tempV += (*PLC_PC & 0x00FF) << 8;
+        if ( temp >= 200 ) {                     //判断是不是C200以上的 寄存器
+          PLC_PC++;
+          tempV += (*PLC_PC & 0x00FF) << 16;
+          PLC_PC++;
+          tempV += (*PLC_PC & 0x00FF) << 24;
+          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
+          if ( PLC_Ws(C) < tempV ) {            //把C当前值与目标值进行比较
+            if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
+              PLC_Ws(C) += 1;
+          }
+          if ( PLC_Ws(C) < tempV )              //比较溢出值
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);     
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);
+        } else {
+          if ( PLC_16BIT(Addr_CVal + temp * 2) < tempV ) {
+            if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
+              PLC_16BIT(Addr_CVal + temp * 2)++;
+          }
+          if ( PLC_16BIT(Addr_CVal + temp * 2) <= tempV )
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);     
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);
+        }
+        CMD_REG = AddrB_CE * 8 + (u8)temp;
+        OUT();
+      } else {
+//        disable_C_K(); 
+        tempV = *PLC_PC & 0x00FF;
+        PLC_PC++;
+        tempV += (*PLC_PC & 0x00FF) << 8;
+        if ( temp >= 200 ) {                //判断是不是C200以上的 寄存器
+          PLC_PC++;
+          tempV += (*PLC_PC & 0x00FF) << 16;
+          PLC_PC++;
+          tempV += (*PLC_PC & 0x00FF) << 24;
+          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
+          if ( PLC_Ws(C) < tempV )              //把C当前值与目标值进行比较
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);     
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);        
+        } else {
+          if ( PLC_16BIT(Addr_CVal + temp * 2) <= tempV )
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);     
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);       
+        }
+        CMD_REG = AddrB_CE * 8 + (u8)temp;
+        OUT();
+      }
+
+      break;  //进行K赋值操作
+    case 0x86:
+      tempV = (*PLC_PC & 0x00FF) >> 1;
+      PLC_PC++;
+      switch (*PLC_PC >> 8) { 
+        case 0x86: tempV += (*PLC_PC & 0x00FF) << 7;        break;
+        case 0x88: tempV += 1000 + (*PLC_PC & 0x00FF) << 7; break; 
+      }
+      if ( PLC_ACC_BIT & 0x01 ) {
+//        enable_C_D();
+        tempV = PLC_16BIT(Addr_D0000 + tempV * 2);
+        if ( temp >= 200 ) {              //判断是不是C200以上的 寄存器
+          tempV += PLC_16BIT(Addr_D0000 + tempV * 2 + 2) << 16;
+          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2; 
+          if ( PLC_Ws(C) < tempV ) {     //把C当前值与目标值进行比较
+            if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
+              PLC_Ws(C) += 1;
+          }
+          if ( PLC_16BIT(Addr_CVal + temp * 2) < tempV )
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);     
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);
+          PLC_PC += 2;                  
+        } else {
+          if ( PLC_16BIT(Addr_CVal + temp * 2) < tempV ) {
+            if ( !PLC_BIT_TEST(Addr_CE * 8 + temp) )
+              PLC_16BIT(Addr_CVal + temp * 2)++;
+          }
+          if ( PLC_16BIT(Addr_CVal + temp * 2) <= tempV )
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);     
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);
+        }
+        CMD_REG = AddrB_CE * 8 + (u8)temp;
+        OUT();
+      } else {
+//        disable_C_D();
+        tempV = PLC_16BIT(Addr_D0000 + tempV * 2);
+        if ( temp >= 200 ) {              //判断是不是C200以上的 寄存器
+          tempV += PLC_16BIT(Addr_D0000 + tempV * 2 + 2) << 16;
+          C = RAM_ADDR + Addr_CHVal + (temp - 200) << 2;
+          if ( PLC_Ws(C) < tempV )      //比较溢出值
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);
+          PLC_PC += 2;
+        } else {
+          if ( PLC_16BIT(Addr_CVal + temp * 2) <= tempV )
+            PLC_BIT_OFF(AddrB_CO * 8 + temp);
+          else
+            PLC_BIT_ON(AddrB_CO * 8 + temp);   //  E00 / 8 = 1C0
+        }  
+        CMD_REG = AddrB_CE * 8 + (u8)temp;
+        OUT();          // 2700 / 8 = 4E0
+      }
+      
+      break;  //进行D赋值操作
+  }  
+}
+//=======================================================================================================
+//=======================================================================================================
+void RST_Y(void) {
+  PLC_16BIT(AddrB_Y) = 0;
+  PLC_16BIT(AddrB_Y + 1) = 0;
+}
+//=======================================================================================================
+//=======================================================================================================
+void RST_T_D_C_M_data(void) {
+u32 backup_addr;
+
+  for ( backup_addr = Addr_D0000; backup_addr < Addr_D0000 + MAXDXXX;      backup_addr+=2 ) //D0000-D8000  0X1000--0X2F40
+    PLC_16BIT(backup_addr) = 0;
+  for ( backup_addr = Addr_CHVal; backup_addr < Addr_CHVal + MAXTIMER * 2; backup_addr+=2 ) //C0-C256
+    PLC_16BIT(backup_addr) = 0;
+  for ( backup_addr = Addr_TVal;  backup_addr < Addr_TVal + MAXTIMER * 2;  backup_addr+=2 ) //T0-T256
+    PLC_16BIT(backup_addr) = 0;
+  for ( backup_addr = Addr_ML;    backup_addr < Addr_ML + 0x0180;          backup_addr+=2 ) //M0-M3096
+    PLC_16BIT(backup_addr) = 0;
+}
+//=======================================================================================================
+//=======================================================================================================
+//
+//=======================================================================================================
+//=======================================================================================================
+void ERR(void) {
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void NOP(void) {
+}
+
+void END(void) {
+  PLC_PRG_STOP = 1;
+}
+
+void FUNC_0(void) {
+  if ( ( CMD_CMD & 0xFF00 ) == 0x0600 )
+    FUNC_TIMER();
+  else if ( ( CMD_CMD & 0xFF00 ) == 0x0E00 )
+    FUNC_COUNTER();
+  else {
+    CMD_PULS = ( CMD_CMD & 0x1000 != 0 ) ? 1 : 0;
+    CMD_REG = *PLC_PC & 0x2FFF;
+    CMD_PULS_TEST = ( ( PLC_ACC_BIT & 0x01 ) && !CMD_PULS ) || ( PLC_LDP_TEST() && CMD_PULS );
+    FUNC_EXT_0[CMD_CMD & 0x01FF]();
+    PLC_PC++;
+  }
+}
+
+void FUNC_F(void) {
+  FUNC_EXT_F[(CMD_CMD & 0x0F00) >> 8]();
+}
+
+void FUNC_FF(void) {
+  switch( CMD_CMD & 0x00FF ) {
+    case 0xF8: //ANB 
+      PLC_ACC_BIT = (PLC_ACC_BIT >> 1) & ( ( PLC_ACC_BIT & 0x01 ) | 0xFE );
+      break;
+    case 0xF9: //ORB
+      PLC_ACC_BIT = (PLC_ACC_BIT >> 1) | (PLC_ACC_BIT & 0x01);
+      break;
+    case 0xFA: //MPS
+      PLC_MPS_BIT = (PLC_MPS_BIT << 1) | (PLC_ACC_BIT & 0x01);
+      break;
+    case 0xFB: //MRD
+      PLC_ACC_BIT = (PLC_ACC_BIT & 0xFE) | (PLC_MPS_BIT & 0x01);
+      break;
+    case 0xFC: //MPP
+      PLC_ACC_BIT = (PLC_ACC_BIT & 0xFE) | (PLC_MPS_BIT & 0x01);
+      PLC_MPS_BIT >>= 1;
+      break;
+    case 0xFD: //INV  
+      PLC_ACC_BIT = (PLC_ACC_BIT & 0xFE) | (~PLC_ACC_BIT & 0x01);                 
+      break;
+    case 0xFF: //POP  
+      break;
+    default:
+      PLC_PROG_ERROR(M8064,02);
+      break;
+  }
+}
+//=======================================================================================================
+//=======================================================================================================
+// BASIC Command
+//=======================================================================================================
+//=======================================================================================================
+// LD, LDI, AND, ANI, OR, ORI, OUT, SET, RST, PLS, PLF
+//=======================================================================================================
+//=======================================================================================================
+void LD(void) {
+  PLC_ACC_BIT <<= 1;
+  if ( PLC_STL_Status ) {
+    if ( PLC_BIT_TEST(CMD_REG) && PLC_BIT_TEST(PLC_STL_Addr) )
+      PLC_ACC_BIT |= 0x01;
+  } else {
+    if ( PLC_BIT_TEST(CMD_REG) )
+      PLC_ACC_BIT |= 0x01;
+  }
+}
+
+void LDI(void) {
+  PLC_ACC_BIT <<= 1;
+  if ( PLC_STL_Status ) {
+    if ( !(PLC_BIT_TEST(CMD_REG) ) && PLC_BIT_TEST(PLC_STL_Addr) )
+      PLC_ACC_BIT |= 0x01;
+  } else {
+    if ( !PLC_BIT_TEST(CMD_REG) )
+      PLC_ACC_BIT |= 0x01;
+  }
+}
+
+void AND(void) {
+  if ( PLC_BIT_TEST(CMD_REG) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+void ANI(void) {
+  if ( !(PLC_BIT_TEST(CMD_REG) ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+void OR(void) {
+  if ( PLC_BIT_TEST(CMD_REG) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+
+void ORI(void) {
+  if ( !(PLC_BIT_TEST(CMD_REG) ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+
+void OUT(void) {
+  if ( PLC_STL_CMD ) {
+    if ( PLC_STL_Status ) {
+      if ( CMD_REG < 0x000A ) { // S000-S009
+        if ( PLC_ACC_BIT & 0x01 ) {
+          PLC_BIT_OFF(PLC_STL_Addr);
+          PLC_BIT_ON(CMD_REG);
+        }
+      } else {
+        if ( PLC_BIT_TEST(PLC_STL_Addr) ) {             
+          if ( PLC_ACC_BIT & 0x01 ) { 
+            PLC_BIT_ON(CMD_REG);
+            PLC_STL_Coil[PLC_STL_Count++] = CMD_REG;
+          } else 
+            PLC_BIT_OFF(CMD_REG);
+        }
+      }
+    } else {
+      if ( CMD_REG < 0x000A ) { // S000-S009
+        if ( PLC_ACC_BIT & 0x01 ) {
+          PLC_BIT_ON(CMD_REG);
+        }
+      } else {
+        if ( PLC_ACC_BIT & 0x01 )
+          PLC_BIT_ON(CMD_REG);
+        else 
+          PLC_BIT_OFF(CMD_REG);
+      }
+    }
+  } else {
+    if ( PLC_ACC_BIT & 0x01 )
+      PLC_BIT_ON(CMD_REG);
+    else
+      PLC_BIT_OFF(CMD_REG);
+  }
+}
+
+void BSET(void) { 
+u8 temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    if ( PLC_STL_Status ) {
+      for ( temp = 0; temp <= PLC_STL_Count; temp++ )
+        PLC_BIT_OFF(PLC_STL_Coil[temp]);
+      
+      PLC_BIT_OFF(PLC_STL_Addr);
+      PLC_STL_Count = 0;
+      PLC_BIT_ON(CMD_REG);
+    } else
+      PLC_BIT_ON(CMD_REG);
+  }
+}
+
+void RST(void) { 
+  if ( PLC_ACC_BIT & 0x01 )
+    PLC_BIT_OFF(CMD_REG);
+}
+//=======================================================================================================
+void PLS(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    if ( PLC_PL_BIT_TEST() == 0 ) {
+      PLC_PL_BIT_ON();
+      PLC_BIT_ON(CMD_REG);   
+    } else {
+      PLC_BIT_OFF(CMD_REG);
+    }
+  } else {
+    PLC_PL_BIT_OFF();
+  }
+}
+
+void PLF(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    if ( PLC_PL_BIT_TEST() == 0 ) {
+      PLC_PL_BIT_ON();
+    }
+  } else {
+    if ( PLC_PL_BIT_TEST() ) {
+      PLC_PL_BIT_OFF();   
+      PLC_BIT_ON(CMD_REG);
+    } else {
+      PLC_BIT_OFF(CMD_REG);
+    }
+  }
+}
+
+void MC(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void MCR(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void RST_TC(void) {
+u32 addr;
+
+  addr = CMD_REG & 0xFF;
+  switch (CMD_REG >> 8) {
+    case 0x86:
+// RESET_T();
+      if ( PLC_ACC_BIT & 0x01 ) {
+        PLC_BIT_OFF(AddrB_TO + addr);
+        PLC_BIT_OFF(AddrB_T2 + addr);
+        PLC_16BIT(Addr_TVal + addr * 2) = 0;
+      
+        PLC_BIT_ON(AddrB_T1 + addr);
+      } else
+        PLC_BIT_OFF(AddrB_T1 + addr);
+      break;
+    case 0x8E:
+// RESET_C();
+      if ( PLC_ACC_BIT & 0x01 ) {
+        if ( addr >= 200 ) {
+          PLC_16BIT(Addr_CVal + addr * 2 + 2) = 0;
+          PLC_16BIT(Addr_CVal + addr * 2) = 0;
+          PLC_BIT_OFF(AddrB_T3 + addr);             //Pointing to the overflow coil and clearing the coil
+        } else {
+          PLC_16BIT(Addr_CVal + addr * 2) = 0;
+          PLC_BIT_OFF(AddrB_T3 + addr);             //Pointing to the overflow coil and clearing the coil
+        }
+      }
+      CMD_REG = 0X3700 + addr;
+      OUT();
+      break;
+  }
+}
+
+void RST_D(void) {  
+u32 temp;
+u32 addr;
+
+  if ( PLC_ACC_BIT & 0x01 ) {   
+    addr = CMD_REG & 0x00FF;
+    PLC_PC++;
+    addr = ( addr + ( ( *PLC_PC & 0x00FF ) << 8) ) * 2;
+    temp = *PLC_PC >> 8;
+//    PLC_PC++;
+    if ( temp == 0x86 ) {
+      PLC_16BIT(Addr_D8000 + addr) = 0;
+    } else if ( addr == 0x88 ) {
+      PLC_16BIT(Addr_D0000 + addr) = 0;
+    } else if ( addr == 0x80 ) {
+      PLC_16BIT(Addr_D1000 + addr) = 0;
+    } else
+      PLC_PROG_ERROR(M8065,6501);
+  } else
+    PLC_PC++;
+}
+//=======================================================================================================
+void STL(void) {    // step mode                      
+  PLC_STL_CMD = 1;          // Global program enable step mark
+  PLC_STL_Status = 1;       // Start step mode                
+  PLC_STL_Addr = CMD_REG;  // Record step address            
+  PLC_ACC_BIT <<= 1;
+  if ( PLC_BIT_TEST(PLC_STL_Addr) )
+    PLC_ACC_BIT |= 0x01;
+}
+
+void RET(void) {  
+  PLC_STL_Status = 0;       //Exit step mode to let the program enter the ladder diagram
+}
+//=======================================================================================================
+void LDP(void) {
+  PLC_ACC_BIT <<= 1;
+  if ( PLC_PL_BIT_TEST() ) { 
+    if ( !( PLC_LD_BIT(CMD_REG) ) )
+      PLC_PL_BIT_OFF();         
+  } else {
+    if ( PLC_STL_Status ) {
+      if ( PLC_LD_BIT(CMD_REG) && PLC_BIT_TEST(PLC_STL_Addr) ) {
+        PLC_ACC_BIT |= 0x01;
+        PLC_PL_BIT_ON();
+      }
+    } else {
+      if ( PLC_LD_BIT(CMD_REG) ) {
+        PLC_ACC_BIT |= 0x01;
+        PLC_PL_BIT_ON();
+      }
+    }
+  } 
+}
+
+void LDF(void) {
+  PLC_ACC_BIT <<= 1;
+  if ( PLC_PL_BIT_TEST() ) {
+    if ( PLC_STL_Status ) {
+      if ( ( !( PLC_LD_BIT(CMD_REG) ) ) && PLC_BIT_TEST(PLC_STL_Addr) ) {
+        PLC_ACC_BIT |= 0x01;
+        PLC_PL_BIT_ON();
+      }
+    } else { 
+      if ( !( PLC_LD_BIT(CMD_REG) ) ) {
+        PLC_ACC_BIT |= 0x01;
+        PLC_PL_BIT_OFF();
+      }
+    }             
+  } else {  
+    if ( PLC_LD_BIT(CMD_REG) )
+      PLC_PL_BIT_ON();
+  }  
+}
+
+void ANDP(void) {
+u8 logic;
+
+  logic = 0;
+  if ( PLC_PL_BIT_TEST() ) {
+    if ( !( PLC_LD_BIT(CMD_REG) ) )
+      PLC_PL_BIT_OFF();
+  } else {
+    if ( PLC_LD_BIT(CMD_REG) ) {
+      logic = 1;
+      PLC_PL_BIT_ON();
+    }
+  }
+  if ( ( PLC_ACC_BIT & 0x01 ) && ( logic == 1 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+void ANDF(void) {
+u8 logic;
+
+  logic = 0;
+  if ( PLC_PL_BIT_TEST() ) {
+    if ( !( PLC_LD_BIT(CMD_REG) ) ) {
+      logic = 1;
+      PLC_PL_BIT_OFF();
+    }
+  } else {
+    if ( PLC_LD_BIT(CMD_REG) )
+      PLC_PL_BIT_ON();
+  }  
+  if ( ( PLC_ACC_BIT & 0x01 ) && ( logic == 1 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+} 
+
+void ORP(void) {
+u8 logic;
+
+  logic = 0;
+  if ( PLC_PL_BIT_TEST() ) { 
+    if ( !( PLC_LD_BIT(CMD_REG) ) )
+      PLC_PL_BIT_OFF();
+  } else {
+    if ( PLC_LD_BIT(CMD_REG) ) {
+      logic = 1;
+      PLC_PL_BIT_ON();
+    }
+  }  
+  if ( ( PLC_ACC_BIT & 0x01 ) || ( logic == 1 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+void ORF(void) {
+u8 logic;
+
+  logic = 0;
+  if ( PLC_PL_BIT_TEST() ) {
+    if ( !( PLC_LD_BIT(CMD_REG) ) ) {
+      logic = 1;
+      PLC_PL_BIT_OFF();
+    }
+  } else {  
+    if ( PLC_LD_BIT(CMD_REG) )
+      PLC_PL_BIT_ON();
+  }  
+  if ( ( PLC_ACC_BIT & 0x01 ) || ( logic == 1 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+//=======================================================================================================
+//=======================================================================================================
+// EXECUTING Command
+//=======================================================================================================
+//=======================================================================================================
+// CJ, CALL, SRET, FEND (WDT, IRET, EI, DI, FOR, NEXT)
+//=======================================================================================================
+//=======================================================================================================
+void CJ(void) { 
+u32 temp;
+
+  if ( CMD_PULS_TEST ) {
+    if ( ( *PLC_PC & 0xFF00 ) == 0x8800 ) {
+      temp = *PLC_PC & 0xFF;
+      PLC_PC++;
+      if ( ( *PLC_PC & 0xFF00 ) == 0x8000 )
+        PLC_PC = PLC_P_Addr[temp >> 1];
+    }
+  } else
+    PLC_PC++;
+}
+
+void CALL(void) { 
+u32 temp, temp1;
+
+  if ( CMD_PULS_TEST ) {
+    if ( ( *PLC_PC & 0xFF00 ) == 0x8800 ) {
+      temp = *PLC_PC & 0xFF;
+      PLC_PC++;
+      if ( ( *PLC_PC & 0xFF00 ) == 0x8000 ) {
+        for ( temp1 = 62; temp1 > 0; temp1-- ) {
+          process[temp1 + 1] = process[temp1];
+          p_save[temp1 + 1] = p_save[temp1]; 
+        }
+        process[0] = PLC_ACC_BIT;
+        p_save[0] = PLC_PC;
+
+        PLC_PC = PLC_P_Addr[temp >> 1];
+      }
+    }
+  } else
+    PLC_PC++;
+}
+
+void SRET(void) { 
+u32 temp;
+
+  PLC_ACC_BIT = process[0];
+  PLC_PC = p_save[0];
+  for ( temp = 62; temp > 0; temp-- ) {
+    process[temp] = process[temp + 1];
+    p_save[temp] = p_save[temp + 1]; 
+  }      
+}
+
+void IRET(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void EI(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void DI(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void WDT(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void FOR(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void NEXT(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+//=======================================================================================================//
+//=======================================================================================================//
+// COMPARE and MOVE Command                                                                              //
+//=======================================================================================================//
+//=======================================================================================================//
+// CMP, ZCP, MOV, SMOV, CML, BMOV, FMOV, XCH, BCD, BIN                                                   //
+// 10 CMP  0x0024  7 0 0 0
+// 11 ZCP  0x0026  7 0 0 0
+// 12 MOV  0x0028  5 0 0 0
+// 13 SMOV 0x002A 11 - - 0
+// 14 CML  0x002C  5 - - 0
+// 15 BMOV 0x002E  7 0 0 0
+// 16 FMOV 0x0030  7 - - 0
+// 17 XCH  0x0032  5 - - 0
+// 18 BCD  0x0034  5 0 0 0
+// 19 BIN  0x0036  5 0 0 0
+//=======================================================================================================//
+//=======================================================================================================//
+#ifdef USE_COMPARE_MOVE
+
+void CMP(void) {
+signed int temp1, temp2, temp3;
+
+  if ( CMD_PULS_TEST ) {
+    Flag_bit = 0XFF;
+
+    temp1 = get_value();
+    temp2 = get_value();
+    temp3 = get_addr();
+
+    PLC_BIT_OFF(temp3);
+    PLC_BIT_OFF(temp3 + 1);
+    PLC_BIT_OFF(temp3 + 2);
+
+    if ( temp1 > temp2 )       PLC_BIT_ON(temp3); 
+    else if ( temp1 == temp2 ) PLC_BIT_ON(temp3 + 1);
+    else if ( temp1 < temp2 )  PLC_BIT_ON(temp3 + 2);    
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DCMP(void) {
+signed int temp3;
+int temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    Flag_bit = 0XFF;
+
+    temp1 = get_valueD();
+    temp2 = get_valueD();
+    temp3 = get_addr();
+
+    PLC_BIT_OFF(temp3);
+    PLC_BIT_OFF(temp3 + 1);
+    PLC_BIT_OFF(temp3 + 2);
+
+    if ( temp1 > temp2 )       PLC_BIT_ON(temp3); 
+    else if ( temp1 == temp2 ) PLC_BIT_ON(temp3 + 1);
+    else if ( temp1 < temp2 )  PLC_BIT_ON(temp3 + 2); 
+  } else
+    PLC_PC += 10;
+}
+#else
+void DCMP(void) {
+}
+#endif
+
+void ZCP(void) {
+signed int temp1,temp2,temp3,temp4;
+
+  if ( CMD_PULS_TEST ) {
+    Flag_bit = 0XFF;
+
+    temp1 = get_value();
+    temp2 = get_value();
+    temp3 = get_value();
+    temp4 = get_addr();
+
+    PLC_BIT_OFF(temp4);
+    PLC_BIT_OFF(temp4 + 1);
+    PLC_BIT_OFF(temp4 + 2);
+
+    if ( temp1 > temp3 )
+      PLC_BIT_ON(temp4); 
+    else if ( ( temp1 <= temp3 ) && ( temp3 <= temp2 ) )
+      PLC_BIT_ON(temp4 + 1);
+    else if ( temp2 < temp3 )
+      PLC_BIT_ON(temp4 + 2); 
+  } else
+    PLC_PC += 8;
+}
+
+#ifdef USE_DOUBLE
+void DZCP(void) {
+s32 temp1,temp2,temp3,temp4;
+
+  if ( CMD_PULS_TEST ) {
+    Flag_bit = 0XFF;
+
+    temp1 = get_valueD();
+    temp2 = get_valueD();
+    temp3 = get_valueD();
+    temp4 = get_addr();
+
+    PLC_BIT_OFF(temp4);
+    PLC_BIT_OFF(temp4 + 1);
+    PLC_BIT_OFF(temp4 + 2);
+
+    if ( temp1 > temp3 )
+      PLC_BIT_ON(temp4); 
+    else if ( ( temp1 <= temp3 ) && ( temp3 <= temp2 ) )
+      PLC_BIT_ON(temp4 + 1);
+    else if ( temp2 < temp3 )
+      PLC_BIT_ON(temp4 + 2); 
+  } else
+    PLC_PC += 14;
+}
+#else
+void DZCP(void) {
+}
+#endif
+
+void MOV(void) {
+  if ( CMD_PULS_TEST ) {
+    value = get_value();
+    put_value();  
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DMOV(void) {
+  if ( CMD_PULS_TEST ) {
+    value = get_valueD();
+    put_valueD(); 
+  } else   
+    PLC_PC += 8;
+}
+#else
+void DMOV(void) {
+}
+#endif
+
+u16 bcd[4]={0x1,0x10,0x100,0x1000};
+void SMOV(void) {
+u32 temp1,temp2,temp3,temp4,temp5,temp6;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value();
+    temp2 = get_value();
+    temp3 = get_value();
+    temp4 = get_addr();
+    temp5 = get_value();
+    temp1 %= bcd[temp2];
+    for ( temp6 = 0; temp6 < temp3; temp6++ ) { 
+      temp2--;
+      temp5--;
+      PLC_16BIT(temp4) |= (temp1 / bcd[temp2]) * bcd[temp5];
+      if ( ( temp2 == 1 ) && ( temp5 == 1 ) ) {
+        PLC_16BIT(temp4) |= temp1 % 0x10 * bcd[temp5];
+        temp6 = temp3 + 1;
+      } else
+        temp1 %= bcd[temp2];
+    }
+  } else
+    PLC_PC += 10;
+}
+
+void CML(void) {
+
+  if ( CMD_PULS_TEST ) {
+    value = ~get_value();
+    put_value();
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DCML(void) {
+
+  if ( CMD_PULS_TEST ) {
+    value = ~get_valueD();
+    put_valueD();
+  } else
+    PLC_PC += 8;
+}
+#else
+void DCML(void) {
+}
+#endif
+
+void BMOV(void) {    
+signed int temp,i;
+
+  if ( CMD_PULS_TEST ) {
+    value = get_value();
+    put_value();
+    temp = get_value();
+    PLC_PC -= 2; // ????
+    for ( i = 1; i < temp; i++ ) {
+      if ( bitT_get == 1 )
+        Transfer= i * 16;
+      else
+        Transfer = i * 2;
+      PLC_PC -= 4;
+      value = get_value();
+      if ( bitT_put == 1 )
+        Transfer = i * 16;
+      else
+        Transfer = i * 2;
+      put_value();
+    }
+    PLC_PC += 2; // ????
+    Transfer = 0;
+  } else
+    PLC_PC += 6;
+}
+
+void FMOV(void) {
+signed int temp,i;
+
+  if ( CMD_PULS_TEST ) {
+    value = get_value();
+    put_value();
+    temp = get_value();
+    PLC_PC -= 2; // ????
+    for ( i = 1; i < temp; i++ ) {
+      if ( bitT_put == 1 )
+        Transfer = i * 16;
+      else
+        Transfer = i * 2;
+      PLC_PC -= 2;
+      put_value();
+    }
+    PLC_PC += 2; // ????
+    Transfer = 0;
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DFMOV(void) {
+signed int temp,i;
+
+  if ( CMD_PULS_TEST ) {
+    value = get_valueD();
+    put_valueD();
+    temp = get_valueD();
+    PLC_PC -= 4; // ????
+    for( i = 1; i < temp; i++ ) {
+      if ( bitT_put == 1)
+        Transfer = i * 32;
+      else
+        Transfer = i * 4;
+      PLC_PC -= 4;
+      put_valueD();
+    }
+    PLC_PC += 2; // ????
+    Transfer = 0;
+  } else
+    PLC_PC += 12;
+}
+#else
+void DFMOV(void) {
+}
+#endif
+
+void XCH(void) {    
+signed int temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value();
+    temp2 = get_value();
+    PLC_PC -= 4;
+    value = temp2;
+    put_value();
+    value = temp1;
+    put_value();
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DXCH(void) {    
+signed int temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD();
+    temp2 = get_valueD();
+    PLC_PC -= 8;
+    value = temp2;
+    put_valueD();
+    value = temp1;
+    put_valueD();
+  } else
+    PLC_PC += 8;
+}
+#else
+void DXCH(void) {    
+}
+#endif
+
+void BCD(void) {
+signed int temp1, temp2;
+
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    temp1 = get_value();
+
+    value = temp1 % 10;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 4;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 8;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 12;
+    put_value();
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DBCD(void) {
+signed int temp1, temp2;
+
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    temp1 = get_valueD();
+
+    value = temp1 % 10;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 4;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 8;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 12;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 16;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 20;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 24;
+    temp1 /= 10;
+    temp2 = temp1 % 10;
+    value += temp2 << 28;
+    put_valueD();
+  } else
+    PLC_PC += 8;
+}
+#else
+void DBCD(void) {
+}
+#endif
+
+void BIN(void) {
+signed int temp1, temp2;
+
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    temp1 = get_value();
+
+    value = temp1 & 0x0F;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 10;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 100;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 1000;
+    put_value();
+  } else
+    PLC_PC += 4;
+}
+ 
+#ifdef USE_DOUBLE
+void DBIN(void) {
+signed int temp1, temp2;
+
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    temp1 = get_valueD();
+
+    value = temp1 & 0x0F;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 10;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 100;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 1000;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 10000;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 100000;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 1000000;
+    temp1 >>= 4;
+    temp2 = temp1 & 0x0F;
+    value += temp2 * 10000000;
+    put_valueD();
+  } else
+    PLC_PC += 8;
+}
+#else
+void DBIN(void) {
+}
+#endif
+
+#endif // USE_COMPARE_MOVE
+//=======================================================================================================
+//=======================================================================================================
+// ARIFMETIC and LOGIC Command
+//=======================================================================================================
+//=======================================================================================================
+//
+// 20 ADD  0x0038  7 0 0 0
+// 21 SUB  0x003A  7 0 0 0
+// 22 MUL  0x003C  7 0 0 0
+// 23 DIV  0x003E  7 0 0 0
+// 24 INC  0x0040  3 0 0 0
+// 25 DEC  0x0042  3 0 0 0
+// 26 WAND 0x0044  7 0 0 0
+// 27 WOR  0x0046  7 0 0 0
+// 28 WXOR 0x0048  7 0 0 0
+// 29 NEG  0x004A  3 - - 0
+//=======================================================================================================
+//=======================================================================================================
+#ifdef USE_ARIPH
+
+void ADD(void) { 
+  if ( CMD_PULS_TEST ) {
+    value = get_value() + get_value();
+    put_value();
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DADD(void) {
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    value = get_valueD() + get_valueD();
+    put_valueD();
+  } else
+    PLC_PC += 12;
+}
+#else
+void DADD(void) {
+}
+#endif
+
+void SUB(void) {
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    value = get_value() - get_value();
+    put_value();
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DSUB(void) {
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    value = get_valueD() - get_valueD();
+    put_valueD();
+  } else
+    PLC_PC += 12;
+}
+#else
+void DSUB(void) {
+}
+#endif
+
+#ifdef USE_MULDIV
+void MUL(void) {
+signed int temp1,temp2;u32 temp3;
+
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    temp1 = get_value();
+    temp2 = get_value();
+    temp3 = addr_value_prog(); 
+    PLC_Ws(temp3) = temp1 * temp2;
+  } else
+    PLC_PC += 6;
+}
+ 
+#ifdef USE_DOUBLE
+void DMUL(void) {   
+signed int temp;
+
+  if ( CMD_PULS_TEST ) {
+    u64d.data = (int64_t)(get_valueD() * get_valueD());
+    temp = get_addr();
+//    PLC_PC += 2;               
+    PLC_16BIT(temp) = u64d.data1[0];
+    PLC_16BIT(temp + 2) = u64d.data1[1]; 
+    PLC_16BIT(temp + 4) = u64d.data1[2]; 
+    PLC_16BIT(temp + 6) = u64d.data1[3];  
+  } else
+    PLC_PC += 12;
+}
+#else
+void DMUL(void) {   
+}
+#endif
+
+void DIV(void) {
+signed int temp1,temp2,temp3;
+
+  if ( CMD_PULS_TEST ) {
+    PLC_Err = PLC_PC;
+    temp1 = get_value();
+    temp2 = get_value();
+    temp3 = get_addr();
+    PLC_16BIT(temp3) = temp1 / temp2;
+    PLC_16BIT(temp3 + 2) = temp1 % temp2;
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DDIV(void) {
+signed int temp1,temp2,temp3;
+s32_union tempD;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD();             
+    temp2 = get_valueD();    
+
+    temp3 = get_addr();
+//    PLC_PC += 2;                         
+
+    tempD.d32 = temp1 / temp2;
+    PLC_16BIT(temp3) = tempD.d16[0];
+    PLC_16BIT(temp3 + 2) = tempD.d16[1]; 
+
+    tempD.d32 = temp1 % temp2;
+    PLC_16BIT(temp3 + 4) = tempD.d16[0]; 
+    PLC_16BIT(temp3 + 6) = tempD.d16[1];  
+  } else
+    PLC_PC += 12;
+}
+#else
+void DDIV(void) {
+}
+#endif
+
+#endif // USE_MULDIV
+
+void INC(void) {
+  if ( CMD_PULS_TEST ) {
+    value = get_value() + 1;
+    PLC_PC -= 2;
+    put_value();
+  } else
+    PLC_PC += 2;
+}
+
+#ifdef USE_DOUBLE
+void DINC(void) {
+  if ( CMD_PULS_TEST ) {
+    value = (u32)get_valueD() + 1;
+    PLC_PC -= 4;
+    put_valueD();
+  } else
+    PLC_PC += 4;
+}
+#else
+void DINC(void) {
+}
+#endif
+
+void DEC(void) {
+  if ( CMD_PULS_TEST ) {
+    value = get_value() - 1;
+    PLC_PC -= 2;
+    put_value();
+  } else
+    PLC_PC += 2;
+}
+
+#ifdef USE_DOUBLE
+void DDEC(void) {
+  if ( CMD_PULS_TEST ) {
+    value = get_valueD() - 1;
+    PLC_PC -= 4;
+    put_valueD();
+  } else
+    PLC_PC += 4;
+}
+#else
+void DDEC(void) {
+}
+#endif
+
+void WAND(void) {
+signed int temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value();
+    temp2 = get_value();
+    value = temp1 & temp2;
+    put_value();
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DWAND(void) {
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD();
+    temp2 = get_valueD();;
+    value = temp1 & temp2;
+    put_valueD();
+  } else
+    PLC_PC += 12;
+}
+#else
+void DWAND(void) {
+}
+#endif
+
+void WOR(void) {
+signed int temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value();
+    temp2 = get_value();
+    value = temp1 | temp2;
+    put_value();
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DWOR(void) {
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD();
+    temp2 = get_valueD();;
+    value = temp1 | temp2;
+    put_valueD();
+  } else
+    PLC_PC += 12;
+}
+#else
+void DWOR(void) {
+}
+#endif
+
+void WXOR(void) {
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value();
+    temp2 = get_value();
+    value = temp1 ^ temp2;
+    put_value();
+  } else
+    PLC_PC += 6;
+}
+
+#ifdef USE_DOUBLE
+void DWXOR(void) {
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD();
+    temp2 = get_valueD();
+    value = temp1 ^ temp2;
+    put_valueD();
+  } else
+    PLC_PC+=12;
+}
+#else
+void DWXOR(void) {
+}
+#endif
+
+void NEG(void) {
+  if ( CMD_PULS_TEST ) {
+    value = 0 - get_value();
+    PLC_PC -= 2;
+    put_value();
+  } else
+    PLC_PC += 2;
+}
+
+#ifdef USE_DOUBLE
+void DNEG(void) {
+  if ( CMD_PULS_TEST ) {
+    value = 0 - get_valueD();
+    PLC_PC -= 4;
+    put_valueD();     
+  } else
+    PLC_PC += 4;
+}
+#else
+void DNEG(void) {
+}
+#endif
+
+#endif // USE_ARIPH
+//=======================================================================================================
+//=======================================================================================================
+// ROTATE
+//=======================================================================================================
+//=======================================================================================================
+//
+// 30 ROR  0x004C  5 - - 0
+// 31 ROL  0x004E  5 - - 0
+// 32 RCR  0x0050  5 - - 0
+// 33 RCL  0x0052  5 - - 0
+// 34 SFTR 0x0054  7 0 0 0
+// 35 SFTL 0x0056  7 0 0 0
+// 36 WSFR 0x0058  9 - - 0
+// 37 WSFL 0x005A  9 - - 0
+// 38 SFWR 0x005C  7 0 0 0
+// 39 SFRD 0x005E  7 0 0 0
+//=======================================================================================================
+//=======================================================================================================
+#ifdef USE_ROTATE
+
+void RCR(void) {    
+u16 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value();
+    temp2 = get_value();
+    value = temp1 >> temp2;
+    PLC_PC -= 2;
+    put_value();
+    PLC_PC += 1;
+  } else
+    PLC_PC += 2;
+}
+
+#ifdef USE_DOUBLE
+void DRCR(void) {    
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD(); 
+    temp2 = get_valueD(); 
+    value = temp1 >> temp2;
+    PLC_PC -= 4;
+    put_valueD();  
+    PLC_PC += 2;
+  } else
+    PLC_PC += 4;
+}
+#else
+void DRCR(void) {
+}
+#endif
+
+void RCL(void) {    
+u16 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value();
+    temp2 = get_value();
+    value = temp1 << temp2;
+    PLC_PC -= 2;
+    put_value();
+    PLC_PC += 1;
+  } else
+    PLC_PC += 2;
+}
+
+#ifdef USE_DOUBLE
+void DRCL(void) {    
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD();
+    temp2 = get_valueD();
+    value = temp1 << temp2;
+    PLC_PC -= 4;
+    put_valueD();
+    PLC_PC += 2;
+  } else
+    PLC_PC += 4;
+}
+#else
+void DRCL(void) {
+}
+#endif
+
+void ROR(void) {    
+u16 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value(); 
+    temp2 = get_value(); 
+    value = ROTATE_RIGHT(temp1,16,temp2);
+    PLC_PC -= 2;
+    put_value();  
+    PLC_PC += 1;
+  } else
+    PLC_PC += 2;
+}
+
+#ifdef USE_DOUBLE
+void DROR(void) {    
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD(); 
+    temp2 = get_valueD(); 
+    value = ROTATE_RIGHT(temp1,32,temp2);
+    PLC_PC -= 4;
+    put_valueD();  
+    PLC_PC += 2;
+  } else
+    PLC_PC += 4;
+}
+#else
+void DROR(void) {
+}
+#endif
+
+void ROL(void) {    
+u16 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_value(); 
+    temp2 = get_value(); 
+    value = ROTATE_LEFT(temp1,16,temp2);
+    PLC_PC -= 2;
+    put_value();
+    PLC_PC += 1;
+  } else
+    PLC_PC += 2;
+}
+
+#ifdef USE_DOUBLE
+void DROL(void) {    
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_valueD(); 
+    temp2 = get_valueD();  
+    value = ROTATE_LEFT(temp1,32,temp2);
+    PLC_PC -= 4;
+    put_valueD();  
+    PLC_PC += 2;
+  } else
+    PLC_PC += 4;
+}
+#else
+void DROL(void) {
+}
+#endif
+
+void SFTR(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void SFTL(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void WSFR(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void WSFL(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void SFWR(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+
+void SFRD(void) { 
+  PLC_PROG_ERROR(M8065,02);
+}
+#endif // USE_ROTATE
+//=======================================================================================================
+//=======================================================================================================
+// DATA 1
+//=======================================================================================================
+//=======================================================================================================
+//
+// 40 ZRST 0x0060  5 0 0 0
+// 41 DECO 0x0062  7 0 0 0
+// 42 ENCO 0x0064  7 0 0 0
+// 43 SUM  0x0066  5 - - 0
+// 44 BON  0x0068  7 - - 0
+// 45 MEAN 0x006A  7 - - 0
+// 46 ANS  0x006C  7 - - 0
+// 47 ANR  0x006E  1 - - 0
+// 48 SQR  0x0070  5 - - 0
+// 49 FLT  0x0072  5 - - 0
+//=======================================================================================================
+//=======================================================================================================
+void ZRST(void) { 
+u32 temp1,temp2;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = get_addr();
+    temp2 = get_addr();
+    if ( Flag_bit == 0x00 ) {
+      for ( ; temp1 <= temp2; temp1++ )
+        PLC_BIT_OFF(temp1);
+    } else {     
+      for ( ; temp1 <= temp2; temp1 += 2 )
+        PLC_16BIT(temp1) = 0;
+    }
+  } else
+    PLC_PC += 4;
+}
+
+void DECO(void) { 
+}
+
+void ENCO(void) { 
+}
+
+void SUM(void) { 
+}
+
+void BON(void) { 
+}
+
+void MEAN(void) {
+u32 temp, temp1, temp2;
+uint64_t data;
+
+  if ( CMD_PULS_TEST ) {
+    temp1 = addr_value_prog();             
+    PLC_PC += 2;
+    temp2 = get_value();
+    if ( Flag_bit == 0xFF ) {
+      for ( temp = 0; temp < temp2; temp++ ) {
+        data += PLC_Hs(temp1 + temp * 2);
+      }
+      PLC_PC -= 4;
+    } else {  
+      data = (u16)temp1;
+      PLC_PC -= 4;
+      for ( temp = 1; temp < temp2; temp++ ) { 
+        PLC_PC -= 2;
+        Transfer = temp * 16;
+        data += addr_value_prog();
+      }
+      Flag_bit = 0xFF;
+    }
+    value = data / temp2;
+    put_value();
+    PLC_PC += 2;        
+  } else
+    PLC_PC += 6;
+}
+
+void ANS(void) { 
+}
+
+void ANR(void) { 
+}
+
+#ifdef USE_FLOAT
+
+#ifdef USE_MULDIV
+void SQR(void) {
+  if ( CMD_PULS_TEST ) {
+    value = (u16)sqrt((double)get_value());
+    put_value();  
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DSQR(void) {
+  if ( CMD_PULS_TEST ) {
+    value = (u32)sqrt((double)get_valueD());
+    put_value();
+  } else
+    PLC_PC += 8;
+}
+#else
+void DSQR(void) {
+}
+#endif
+
+#else
+void SQR(void) {
+}
+
+void DSQR(void) {
+}
+#endif
+
+void FLT(void) {    
+  if ( CMD_PULS_TEST ) {
+    valueF = (float)get_value();      
+    put_valueF();
+    PLC_PC -= 2; 
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DFLT(void) {
+  if ( CMD_PULS_TEST ) {
+    valueF = (float)get_valueD();          
+    put_valueF();
+  } else
+    PLC_PC += 8;
+}
+#else
+void DFLT(void) {
+}
+#endif
+
+#endif
+//=======================================================================================================
+//=======================================================================================================
+// 
+//=======================================================================================================
+//=======================================================================================================
+//
+// 50 REF  0x0074  5 0 0 0
+// 51 REFF 0x0076  3 - - 0
+// 52 MTR  0x0078  9 0 0 0
+// 53 HSCS 0x007A 13 0 0 0
+// 54 HSCR 0x007C 13 0 0 0
+// 55 HSZ  0x007E 17 - - 0
+// 56 SPD  0x0080  7 0 0 0
+// 57 PLSY 0x0082  7 0 0 0
+// 58 PWM  0x0084  7 0 0 0
+// 59 PLSR 0x0086  7 0 0 0
+//=======================================================================================================
+//=======================================================================================================
+void REF(void) { 
+}
+
+void REFF(void) {
+  if ( CMD_PULS_TEST ) {
+    X_DIY = get_value();
+  } else {
+    X_DIY = 10;
+    PLC_PC += 2;
+  }
+}
+
+void MTR(void) {
+u16 X,Y,M_Y,K_H,temp=0;
+u8 i,t;   
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    X = get_addr();
+    Y = get_addr();
+    M_Y = get_addr();
+    K_H = get_value();
+    for ( i = 0; i < K_H; i++ ) {
+      temp = i * 8;
+      PLC_BIT_ON(Y + i);
+      for ( t = 0; t <= 7; t++ )
+        (PLC_BIT_TEST(X + t)) ? PLC_BIT_ON(M_Y + temp + t) : PLC_BIT_OFF(M_Y + temp + t);
+    }
+  } else
+    PLC_PC += 8;
+}
+
+#ifdef USE_DOUBLE
+void DHSCS(void) {
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp2 == temp1 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+void DHSCR(void) { 
+}
+
+void DHSZ(void) { 
+}
+#endif
+
+void SPD(void) { 
+}
+
+void PLSY(void) { 
+}
+
+void PWM(void) { 
+}
+
+void PLSR(void) { 
+}
+//=======================================================================================================
+//=======================================================================================================
+//
+//=======================================================================================================
+//=======================================================================================================
+//
+// 60 IST  0x0088  7 0 0 0
+// 61 SER  0x008A  7 - - 0
+// 62 ABSD 0x008C  9 0 0 0
+// 63 INCD 0x008E  9 0 0 0
+// 64 TTMR 0x0090  5 0 0 0
+// 65 STMR 0x0092  7 - - 0
+// 66 ALT  0x0094  3 0 0 0
+// 67 RAMP 0x0096  9 0 0 0
+// 68 ROTC 0x0098  9 - - 0
+// 69 SORT 0x009A 17 - - 0
+// 70 TKY  0x009C  7 - - 0
+// 71 HKY  0x009E  9 - - 0
+// 72 DSW  0x00A0  9 0 0 0
+// 73 SEGD 0x00A2  5 - - 0
+// 74 SEGL 0x00A4  7 0 0 0
+// 75 ARWS 0x00A6  9 - - 0
+// 76 ASC  0x00A8 11 - - 0
+// 77 PR   0x00AA  5 - - 0
+// 78 FROM 0x00AC  9 - 0 0
+// 79 TO   0x00AE  9 - 0 0
+// 80 RS   0x00B0  9 0 0 0
+// 81 PRUN 0x00B2  5 0 0 0
+// 82 ASCI 0x00B4  7 0 0 0
+// 83 HEX  0x00B6  7 0 0 0
+// 84 CCD  0x00B8  7 0 0 0
+// 85 VRRD 0x00BA  5 0 0 0
+// 86 VRSC 0x00BC  5 0 0 0
+// 88 PID  0x00C0  9 0 0 0
+//=======================================================================================================
+//=======================================================================================================
+void IST(void) { 
+}
+
+void SER(void) { 
+}
+
+void ABSD(void) { 
+}
+
+void INCD(void) { 
+}
+
+void TTMR(void) { 
+}
+
+void STMR(void) { 
+}
+
+void ALT(void) {    
+u32 temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_addr(); 
+    if ( PLC_BIT_TEST(temp) )
+      PLC_BIT_OFF(temp);
+    else
+      PLC_BIT_ON(temp);
+  } else
+    PLC_PC++;
+}
+
+void RAMP(void) { 
+}
+
+void ROTC(void) { 
+}
+
+void SORT(void) { 
+}
+
+void TKY(void) { 
+}
+
+void HKY(void) { 
+}
+
+void DSW(void) { 
+}
+
+void SEGD(void) { 
+}
+
+void SEGL(void) { 
+}
+
+void ARWS(void) { 
+}
+
+void ASC(void) { 
+}
+
+void PR(void) { 
+}
+
+void FROM(void) { 
+}
+
+void TO(void) { 
+}
+
+void RS(void) { 
+}
+
+void PRUN(void) { 
+}
+
+void ASCI(void) { 
+}
+
+void HEX(void) { 
+}
+
+void CCD(void) { 
+}
+
+void VRRD(void) { 
+}
+
+void VRSC(void) { 
+}
+
+void PID(void) { 
+}
+//=======================================================================================================
+//=======================================================================================================
+// FLOAT Command
+//=======================================================================================================
+//=======================================================================================================
+//
+// 110 ECMP 0x00EC 13 - - 0
+// 111 EZCP 0x00EE 17 - - 0
+// 118 EBCD 0x00FC  9 - - 0
+// 119 EBIN 0x00FE  9 - - 0
+// 120 EADD 0x0100 13 - - 0
+// 121 ESUB 0x0102 13 - - 0
+// 122 EMUL 0x0104 13 - - 0
+// 123 EDIV 0x0108 13 - - 0
+// 127 ESQR 0x010E  9 - - 0
+// 129 INT  0x0112  5 - - 0
+// 130 SIN  0x0114  9 - - 0
+// 131 COS  0x0116  9 - - 0
+// 132 TAN  0x0118  9 - - 0
+//=======================================================================================================
+//=======================================================================================================
+#ifdef USE_FLOAT
+void DECMP(void) {
+signed int temp3;
+float temp1,temp2;
+
+  if ( PLC_ACC_BIT & 0x01 ) {  
+    Flag_bit = 0XFF;
+
+    temp1 = get_valueF();
+    temp2 = get_valueF();
+    temp3 = get_addr();
+
+    PLC_BIT_OFF(temp3);
+    PLC_BIT_OFF(temp3 + 1);
+    PLC_BIT_OFF(temp3 + 2);
+
+    if      ( temp1 > temp2 )  PLC_BIT_ON(temp3); 
+    else if ( temp1 == temp2 ) PLC_BIT_ON(temp3 + 1);
+    else if ( temp1 < temp2 )  PLC_BIT_ON(temp3 + 2); 
+  } else
+    PLC_PC += 9;
+}
+
+void DEZCP(void) {
+float temp1,temp2,temp3;
+u32 temp4;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    Flag_bit = 0XFF;
+
+    temp1 = get_valueF();
+    temp2 = get_valueF();
+    temp3 = get_valueF();
+    temp4 = get_addr();
+
+    PLC_BIT_OFF(temp4);
+    PLC_BIT_OFF(temp4 + 1);
+    PLC_BIT_OFF(temp4 + 2);
+
+    if      ( temp1 > temp3 )                            PLC_BIT_ON(temp4); 
+    else if ( ( temp1 <= temp3 ) && ( temp3 <= temp2 ) ) PLC_BIT_ON(temp4 + 1);
+    else if ( temp2 < temp3 )                            PLC_BIT_ON(temp4 + 2); 
+  } else
+    PLC_PC += 13;
+}
+
+void DEMOV(void) {
+  if ( PLC_ACC_BIT &0x01 ) {
+    valueF = get_valueF();
+    put_valueF(); 
+  } else   
+    PLC_PC += 6;
+}
+
+void DEADD(void) {  
+  if ( PLC_ACC_BIT & 0x01 ) {
+    valueF = get_valueF() + get_valueF();             
+    put_valueF();
+  } else
+    PLC_PC += 12;
+}
+
+void DESUB(void) {
+float temp1,temp2;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp1 = get_valueF();              
+    temp2 = get_valueF(); 
+    valueF = temp1 - temp2;          
+    put_valueF();
+  } else
+    PLC_PC += 12;
+}
+
+void DEMUL(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    valueF = get_valueF() * get_valueF();          
+    put_valueF();
+  } else
+    PLC_PC+=12;
+}
+
+void DEDIV(void) {
+float temp1,temp2;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp1 = get_valueF();              
+    temp2 = get_valueF(); 
+    valueF = temp1 / temp2;          
+    put_valueF();
+  } else
+    PLC_PC += 12;
+}
+
+void DESQR(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    valueF = (float)sqrt((double)get_valueF());
+    put_valueF();
+  } else
+    PLC_PC += 8;
+}
+
+void INT(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    value = (u16)get_valueF();
+    PLC_PC -= 2; 
+    put_value();
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DINT(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    value = (u32)get_valueF();
+    put_valueD();
+  } else
+    PLC_PC += 8;
+}
+#endif
+
+void DTAN(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    valueF = (float)tan((double)get_valueF());
+    put_valueF();
+  } else
+    PLC_PC += 8;
+}
+
+void DCOS(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    valueF = (float)cos((double)get_valueF());
+    put_valueF();
+  } else
+    PLC_PC += 8;
+}
+
+void DSIN(void) {
+  if ( PLC_ACC_BIT & 0x01 ) {
+    valueF = (float)sin((double)get_valueF());
+    put_valueF();
+  } else
+    PLC_PC += 8;
+}
+
+#endif
+//=======================================================================================================
+//=======================================================================================================
+//
+//=======================================================================================================
+//=======================================================================================================
+//
+// 147 SWAP 0x0136  3 - - 0
+// 155 ABS  0x0146 13 0 0 -
+// 156 ZRN  0x0148  9 0 0 -
+// 157 PLSV 0x014A  9 0 0 -
+// 158 DRVI 0x014C  9 0 0 -
+// 159 DRVA 0x014E  9 0 0 -
+//=======================================================================================================
+//=======================================================================================================
+void SWAP(void) {    
+u32 temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_value();    
+    value = (temp >> 8) | (temp << 8);
+    PLC_PC -= 2;
+    put_value();     
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DSWAP(void) {    
+u32 temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_valueD();
+    value = (temp >> 16) | (temp << 16);
+    PLC_PC -= 4;
+    put_valueD();
+  }
+}
+#else
+void DSWAP(void) {
+}
+#endif
+//=======================================================================================================
+//=======================================================================================================
+// TIME Command
+//=======================================================================================================
+//=======================================================================================================
+//
+// 160 TCMP 0x0150 11 0 0 0
+// 161 TZCP 0x0152  9 0 0 0
+// 162 TADD 0x0154  7 0 0 0
+// 163 TSUB 0x0156  7 0 0 0
+// 166 TRD  0x015C  3 0 0 0
+// 167 TWR  0x015E  3 0 0 0
+// 169 HOUR 0x0162  7 0 0 -
+//=======================================================================================================
+//=======================================================================================================
+#ifdef USE_TIME
+void TCMP(void) {   
+u32 h,m,s,temp,h2,m2,s2;
+
+  if ( PLC_ACC_BIT & 0x01 ) {  
+    Flag_bit = 0XFF;
+
+    h = get_value();
+    m = get_value();
+    s = get_value();
+
+    temp = get_addr();
+    h2 = PLC_16BIT(temp);
+    m2 = PLC_16BIT(temp + 2);
+    s2 = PLC_16BIT(temp + 4);
+
+    temp = get_addr();
+    PLC_BIT_OFF(temp);
+    PLC_BIT_OFF(temp + 1);
+    PLC_BIT_OFF(temp + 2);  
+
+    if ( ( h >= h2 ) && ( m >= m2 ) && ( s > s2 ) )
+      PLC_BIT_ON(temp);
+    else if ( ( h == h2 ) && ( m == m2 ) && ( s == s2 ) )
+      PLC_BIT_ON(temp + 1);
+    else if ( ( h <= h2 ) && ( m <= m2 ) && ( s < s2 ) )
+      PLC_BIT_ON(temp + 2);
+  } else
+    PLC_PC += 5;
+}
+
+void TZCP(void) {
+u32 h,m,s, h1,m1,s1, h2,m2,s2;
+u32 temp1,temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {  
+    Flag_bit = 0XFF;
+
+    temp = get_addr();
+    h = PLC_16BIT(temp);
+    m = PLC_16BIT(temp + 2);
+    s = PLC_16BIT(temp + 4);
+
+    temp = get_addr();
+    h1 = PLC_16BIT(temp);
+    m1 = PLC_16BIT(temp + 2);
+    s1 = PLC_16BIT(temp + 4);
+
+    temp = get_addr();
+    h2 = PLC_16BIT(temp);
+    m2 = PLC_16BIT(temp + 2);
+    s2 = PLC_16BIT(temp + 4);
+
+    temp1 = get_addr();
+    PLC_BIT_OFF(temp1);
+    PLC_BIT_OFF(temp1 + 1);
+    PLC_BIT_OFF(temp1 + 2);
+
+    if ( ( h >= h2 ) && ( m >= m2 ) && ( s > s2 ) ) {
+      PLC_BIT_ON(temp1);
+    }
+    else if ( ( ( h <= h2 ) && ( m <= m2 ) && ( s <= s2 ) ) && ( ( h1 >= h2 ) && ( m1 >= m2 ) && ( s1 >= s2 ) ) ) {
+      PLC_BIT_ON(temp1 + 1);
+    }
+    else if ( ( h1 <= h2 ) && ( m1 <= m2 ) && ( s1 < s2 ) ) {
+      PLC_BIT_ON(temp1 + 2);
+    }
+  } else
+    PLC_PC += 4;
+}
+
+void TADD(void) {  
+u32 temp,temp1,temp2;
+
+  if ( PLC_ACC_BIT & 0x01 ) { 
+    temp1 = get_addr();              
+    temp2 = get_addr();  
+    temp  = get_addr();
+    PLC_16BIT(temp)     = PLC_16BIT(temp1)     + PLC_16BIT(temp2);
+    PLC_16BIT(temp + 2) = PLC_16BIT(temp1 + 2) + PLC_16BIT(temp2 + 2);
+    PLC_16BIT(temp + 4) = PLC_16BIT(temp1 + 4) + PLC_16BIT(temp2 + 4);
+  } else
+    PLC_PC += 3;
+}
+
+void TSUB(void) {
+u32 temp,temp1,temp2;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp1 = get_addr();
+    temp2 = get_addr();
+    temp  = get_addr();
+    PLC_16BIT(temp)     = PLC_16BIT(temp1)     - PLC_16BIT(temp2);
+    PLC_16BIT(temp + 2) = PLC_16BIT(temp1 + 2) - PLC_16BIT(temp2 + 2);
+    PLC_16BIT(temp + 4) = PLC_16BIT(temp1 + 4) - PLC_16BIT(temp2 + 4);
+  } else
+    PLC_PC += 3;
+}
+
+void TRD(void) {
+u32 temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_addr();
+    PLC_16BIT(temp)      = D8018;
+    PLC_16BIT(temp + 2)  = D8017;
+    PLC_16BIT(temp + 4)  = D8016;
+    PLC_16BIT(temp + 6)  = D8015;
+    PLC_16BIT(temp + 8)  = D8014;
+    PLC_16BIT(temp + 10) = D8013;
+    PLC_16BIT(temp + 12) = D8019;
+  } else
+    PLC_PC++;
+}
+
+void TWR(void) {
+u32 temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_addr();
+    RTC_Set(PLC_16BIT(temp), PLC_16BIT(temp + 2), PLC_16BIT(temp + 4), PLC_16BIT(temp + 6), PLC_16BIT(temp + 8), PLC_16BIT(temp + 10));
+  } else
+    PLC_PC++;
+}
+
+void HOUR(void) { 
+}
+#endif
+//=======================================================================================================
+//=======================================================================================================
+//
+//=======================================================================================================
+//=======================================================================================================
+
+// 170 GRY  0x0164  5 - - 0
+// 171 GBIN 0x0166  5 - - 0
+// 176 RD3A 0x0170  7 - 0 -
+// 177 WR3A 0x0172  7 - 0 -
+
+
+unsigned int b2g(unsigned int lStart,unsigned int lEnd,unsigned int lValue) {
+unsigned int Start = lStart, End = lEnd, Temp = 0, Counter = 0;
+unsigned char Type = 1;
+
+  while(Start<End) {
+    Temp = (End + Start - 1) >> 1;
+    if ( lValue <= Temp ) {
+      if ( !Type )
+        Counter += ( (End - Start + 1) >> 1 );
+      End = Temp;
+      Type = 1;
+    } else {
+      if ( Type )
+        Counter += ( (End - Start + 1) >> 1 );
+      Start = ++Temp;
+      Type = 0;
+    }
+  }
+  return Counter;
+}
+
+/**
+ * ?????????
+ * @param lStart lValue????????????
+ * @param lEnd lValue????????????
+ * @param lValue ??????????
+ * @return ???????????????
+ * @see b2g()   b2g  ????????
+ * @see BtoG()  BtoG ????????
+ * @see GtoB()  BtoG ????????
+ * @useage a=b2g(0,15,6); //??6??????????? ??a??4
+ * @memo lValue?????????????[lStart,lEnd]?,??????????.???,???
+ *       ???,????????????.??lStart,lEnd?????2?N???1. ??lStart?0.
+ *       ????????,????GtoB()???????.?????????????105%~140%.
+ */
+
+unsigned int g2b(unsigned int lStart,unsigned int lEnd,unsigned int lValue) {
+unsigned int Start = lStart, End = lEnd, Counter = 0, Temp = 0;
+unsigned char Type = 1;
+
+  while ( Start < End ) {
+    Temp = Counter + ( (End - Start + 1) >>1 );
+    if ( Type^( lValue < Temp ) ) { 
+      if ( Type )
+        Counter = Temp;
+      Start = (Start + End + 1) >> 1;
+      Type = 0;
+    } else {
+      if ( !Type )
+        Counter=Temp;
+      End = ( Start + End - 1 ) >> 1;
+      Type = 1;
+    }
+  }
+  return Start;
+}
+
+//=======================================================================================================
+// ????:  int BtoG(unsigned int lValue)
+//=======================================================================================================
+signed int BtoG(unsigned int lValue) {
+register unsigned int lV = lValue, lMax = 1;
+
+  while ( lV > 0 ) {
+    lV >>= 1;
+    lMax <<= 1;
+  }
+  if ( lMax == 0 )
+    return -1;
+  return b2g(0,--lMax,lValue);
+}
+
+//=======================================================================================================
+// ????:  int GtoB(unsigned int lValue)
+//=======================================================================================================
+signed int GtoB(unsigned int lValue) {
+register unsigned int lV = lValue, lMax = 1;
+
+  while ( lV > 0 ) {
+    lV >>= 1;
+    lMax <<= 1;
+  }
+  if ( lMax == 0 )
+    return -1;
+  return g2b(0,--lMax,lValue);
+}
+
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+//=======================================================================================================
+void GRY(void) {    
+signed int temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_value();
+    value = (u16)BtoG((unsigned int)temp);
+    put_value();
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DGRY(void) {    
+signed int temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_value();
+    value = BtoG(temp);
+    put_valueD();
+  } else
+    PLC_PC += 8;
+}
+#endif
+
+void GBIN(void) {    
+signed int temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_value();
+    value = (u16)GtoB((unsigned int)temp);
+    put_value();
+  } else
+    PLC_PC += 4;
+}
+
+#ifdef USE_DOUBLE
+void DGBIN(void) {    
+signed int temp;
+
+  if ( PLC_ACC_BIT & 0x01 ) {
+    temp = get_value();
+    value = GtoB(temp);
+    put_valueD();
+  } else
+    PLC_PC += 8;
+}
+#endif
+
+//=======================================================================================================
+//=======================================================================================================
+// Special command
+//=======================================================================================================
+//=======================================================================================================
+//
+// 224 LD=   0x01D0  5 0 0 0
+// 225 LD>   0x01D2  5 0 0 0
+// 226 LD<   0x01D4  5 0 0 0
+// 228 LD<>  0x01D8  5 0 0 0
+// 229 LD?   0x01DA  5 0 0 0
+// 230 LD?   0x01DC  5 0 0 0
+// 232 AND=  0x01E0  5 0 0 0
+// 233 AND>  0x01E2  5 0 0 0
+// 234 AND<  0x01E4  5 0 0 0
+// 236 AND<> 0x01E8  5 0 0 0
+// 237 AND?  0x01EA  5 0 0 0
+// 238 AND?  0x01EC  5 0 0 0
+// 240 OR=   0x01F0  5 0 0 0
+// 241 OR>   0x01F2  5 0 0 0
+// 242 OR<   0x01F4  5 0 0 0
+// 244 OR<>  0x01F8  5 0 0 0
+// 245 OR?   0x01FA  5 0 0 0
+// 246 OR?   0x01FC  5 0 0 0
+//=======================================================================================================
+//=======================================================================================================
+#ifdef USE_SPECIAL
+
+void LD_EQU(void) {
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {
+    if ( ( temp1 == temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 == temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+
+#ifdef USE_DOUBLE
+void DLD_EQU(void) {
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1 ) {
+    if ( ( temp1 == temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else {
+    if ( temp1 == temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+#else
+void DLD_EQU(void) {
+}
+#endif
+
+void OR_EQU() { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 == temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+#ifdef USE_DOUBLE
+void DOR_EQU() { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 == temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+#else
+void DOR_EQU(void) {
+}
+#endif
+
+void AND_EQU(void) {
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 == temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+#ifdef USE_DOUBLE
+void DAND_EQU(void) {
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 == temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+#else
+void DAND_EQU(void) {
+}
+#endif
+
+void LD_GTR(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {  
+    if ( ( temp1 > temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 > temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+
+#ifdef USE_DOUBLE
+void DLD_GTR(void) {
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1 ) {
+    if ( ( temp1 > temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 > temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+#else
+void DLD_GTR(void) {
+}
+#endif
+
+void OR_GTR() { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 > temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+
+#ifdef USE_DOUBLE
+void DOR_GTR() { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 >= temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+#else
+void DOR_GTR(void) {
+}
+#endif
+
+void AND_GTR(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 > temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+#ifdef USE_DOUBLE
+void DAND_GTR(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 > temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+#else
+void DAND_GTR(void) {
+}
+#endif
+
+void LD_LSS(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {  
+    if ( ( temp1 < temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 < temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+
+#ifdef USE_DOUBLE
+void DLD_LSS(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {  
+    if ( ( temp1 < temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 < temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+#else
+void DLD_LSS(void) {
+}
+#endif
+
+void OR_LSS() { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 < temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+
+#ifdef USE_DOUBLE
+void DOR_LSS() { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( (temp1 < temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+#else
+void DOR_LSS(void) {
+}
+#endif
+
+void AND_LSS(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 < temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+#ifdef USE_DOUBLE
+void DAND_LSS(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 < temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+#else
+void DAND_LSS(void) {
+}
+#endif
+
+void LD_LEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {  
+    if ( ( temp1 <= temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 <= temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}  
+
+#ifdef USE_DOUBLE
+void DLD_LEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {  
+    if ( ( temp1 <= temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 <= temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}  
+#else
+void DLD_LEQ(void) {
+}
+#endif
+
+void OR_LEQ() { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 <= temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+
+#ifdef USE_DOUBLE
+void DOR_LEQ() { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 <= temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+#else
+void DOR_LEQ(void) {
+}
+#endif
+
+void AND_LEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 <= temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+#ifdef USE_DOUBLE
+void DAND_LEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 <= temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+#else
+void DAND_LEQ(void) {
+}
+#endif
+
+void LD_GEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {  
+    if ( ( temp1 >= temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 >= temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+
+#ifdef USE_DOUBLE
+void DLD_GEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  PLC_ACC_BIT <<= 1;
+  if ( PLC_STL_Status == 1) {
+    if ( ( temp1 >= temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 >= temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+#else
+void DLD_GEQ(void) {
+}
+#endif
+
+void OR_GEQ() { 
+signed short int temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 >= temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+
+#ifdef USE_DOUBLE
+void DOR_GEQ() { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 >= temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+#else
+void DOR_GEQ(void) {
+}
+#endif
+
+void AND_GEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 >= temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+#ifdef USE_DOUBLE
+void DAND_GEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 >= temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+#else
+void DAND_GEQ(void) {
+}
+#endif
+
+void LD_NEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  PLC_ACC_BIT <<= 1;
+  if ( PLC_STL_Status == 1) {
+    if ( ( temp1 != temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 != temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+
+#ifdef USE_DOUBLE
+void DLD_NEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  PLC_ACC_BIT <<= 1;    
+  if ( PLC_STL_Status == 1) {  
+    if ( ( temp1 != temp2 ) && ( PLC_BIT_TEST(PLC_STL_Addr) ) )
+      PLC_ACC_BIT |= 1;
+  } else { 
+    if ( temp1 != temp2 )
+      PLC_ACC_BIT |= 1;
+  }
+}
+#else
+void DLD_NEQ(void) {
+}
+#endif
+
+void OR_NEQ() { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 != temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+
+#ifdef USE_DOUBLE
+void DOR_NEQ() { 
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 != temp2 ) || ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 0x01;
+  else
+    PLC_ACC_BIT &= 0xFE; 
+}
+#else
+void DOR_NEQ(void) {
+}
+#endif
+
+void AND_NEQ(void) { 
+s32 temp1,temp2;
+
+  temp1 = get_value();
+  temp2 = get_value();
+  if ( ( temp1 != temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+
+#ifdef USE_DOUBLE
+void DAND_NEQ(void) {
+s32 temp1,temp2;
+
+  temp1 = get_valueD();
+  temp2 = get_valueD();
+  if ( ( temp1 != temp2 ) && ( PLC_ACC_BIT & 0x01 ) )
+    PLC_ACC_BIT |= 1;
+  else
+    PLC_ACC_BIT &= 0xFE;
+}
+#else
+void DAND_NEQ(void) {
+}
+#endif
+
+#endif // USE_SPECIAL
+//=======================================================================================================
+//=======================================================================================================
+// Instruction Parse 
+//=======================================================================================================
+//=======================================================================================================
+void PLC_ProInstructParse(void) { 
+u32 temp;
+
+  if ( PLC_RUN ) {
+    if ( PLC_RUN_FLAG ) {
+      PLC_RUN_FLAG = 0;
+      PLC_8BIT(Addr_M8) = 0x09;     
+    }
+    if ( PLC_8BIT(Addr_M8) == 0x09 ) {
+      PLC_BIT_ON(M8000);
+      PLC_BIT_OFF(M8001);
+      RUN_LED_ON;
+      PLC_PRG_STOP = 0;
+      if ( PLC_NEW_PROG ) {
+// Determine whether there is program editing.
+// If you edit the program once, you must recalculate the address where P is located.
+        PLC_NEW_PROG = 0;
+        PLC_PC = PLC_START_ADDR;
+        for ( temp = 0; temp < ( MAXSTEP - 1 ); temp++ ) {
+          if ( ( *PLC_PC & 0xFF00 ) == 0xB000 )
+            PLC_P_Addr[*PLC_PC & 0x00FF] = PLC_PC;
+          PLC_PC++;
+        }
+        PLC_PC = PLC_START_ADDR - 1;
+        temp = 0;
+        do {
+          PLC_PC++;
+          temp++;
+        } while ( ( !( *PLC_PC == 0x000F ) ) && ( temp < ( MAXSTEP - 1 ) ) );
+
+        if ( temp >= MAXSTEP ) {
+          PLC_8BIT(Addr_M8) = 0x09;
+          PLC_PRG_STOP = 1;
+//          goto all_end;  
+        }
+      }
+
+      PLC_RUN_TIME = 0;
+
+      if ( PLC_PRG_STOP == 0 ) {
+        if ( PLC_PULS ) {
+          PLC_BIT_ON(M8002);
+          PLC_BIT_OFF(M8003);
+        }
+        if ( PLC_UPDATE_PROG == 0 ) {
+          PLC_IO_Refresh();
+        } 
+        PLC_PC = PLC_START_ADDR;
+      }
+    
+      while ( PLC_PRG_STOP == 0 ) {
+        CMD_CMD  = *PLC_PC;
+        CMD_REG  = CMD_CMD & 0x0FFF;
+        CMD_ADDR = PLC_PC - PLC_START_ADDR;
+        PLC_PC++;
+
+        FUNC_BASIC[CMD_CMD >> 12]();
+      }
+
+//#include "loop.c"
+
+      D8010 = D8011 = D8012 = PLC_RUN_TIME;
+      PLC_PULS = 0;     
+      PLC_BIT_OFF(M8002);
+      PLC_BIT_ON(M8003);
+    } else { 
+// --- Addr_M8 != 0x09 !!!!
+      PLC_BIT_OFF(M8000);
+      PLC_BIT_ON(M8001);
+      D8012 = 0; 
+      PLC_NEW_PROG = 1;
+      PLC_PULS = 1; // Initialization pulse used to 8002 8003
+      RUN_LED_OFF;
+      if ( PLC_UPDATE_PROG == 0 ) {
+        RST_Y(); 
+        PLC_IO_Refresh();
+        RST_T_D_C_M_data();
+      }  
+      PLC_STL_CMD = PLC_STL_Status = 0;
+    }
+  } else { 
+// --- Not RUN !!!!
+    RST_Y(); // If you switch from the running state to the stop state, you need to clear the Y output.
+    PLC_BIT_OFF(M8000);
+    PLC_BIT_ON(M8001);
+    D8012 = 0; 
+    PLC_NEW_PROG = 1;
+    PLC_PULS = 1; // Initialization pulse used to 8002 8003
+    RUN_LED_OFF;
+//    PLC_UPDATE_PROG = 0; // ????
+    PLC_IO_Refresh();
+    PLC_STL_CMD = PLC_STL_Status = 0;  
+    if ( PLC_RUN_FLAG == 0 ) {
+      PLC_RUN_FLAG = 1;
+      PLC_RUN_TIME = 0;                      
+      RST_T_D_C_M_data();
+    }
+  }
+  D8001 = 0; // ????              //设置版本号
+} 
+//=======================================================================================================
+//=======================================================================================================
