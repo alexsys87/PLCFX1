@@ -95,7 +95,8 @@ extern "C"  {
 #define PDout(n)   BIT_ADDR(GPIOD_ODR_Addr,n)  //Output 
 #define PDin(n)    BIT_ADDR(GPIOD_IDR_Addr,n)  //Input 
 
-#define PLC_RUN    PBin(8)
+/* RUN/STOP is controlled by the programming protocol, not a jumper. */
+#define PLC_RUN    1U
 #define PVD        PAin(0)
 
 #define RUN_LED_ON    PCout(13)=0
@@ -105,26 +106,26 @@ extern "C"  {
 #define ERR_LED_OFF   PBout(12)=1 
 
 //X input definitions
-#define X00 PAin(1)	
-#define X01 PAin(2)
-#define X02 PAin(3)
-#define X03 PAin(6)
-#define X04 PAin(7)		 
-#define X05 PCin(4)
-#define X06 PCin(5)
-#define X07 PBin(0)
+#define X00 PAin(0)
+#define X01 PAin(1)
+#define X02 PAin(2)
+#define X03 PAin(3)
+#define X04 PAin(4)
+#define X05 PAin(5)
+#define X06 PAin(6)
+#define X07 PAin(7)
 
 // Users may extend these definitions as needed
 
 //Y output definitions
-#define Y00 PCout(9)  
-#define Y01 PAout(8)  
-#define Y02 PAout(11)
-#define Y03 PAout(12)
-#define Y04 PAout(15)   
-#define Y05 PCout(10) 
-#define Y06 PCout(11) 
-#define Y07 PCout(12)
+#define Y00 PBout(0)
+#define Y01 PBout(1)
+#define Y02 PBout(5)
+#define Y03 PBout(6)
+#define Y04 PBout(7)
+#define Y05 PBout(8)
+#define Y06 PBout(9)
+#define Y07 PBout(10)
 
 // Users may extend these definitions as needed
 

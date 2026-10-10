@@ -77,6 +77,7 @@ Example: D8120 = 0X4096 Communication baud rate is 19200
 #include "platform.h"
 #include "plc_flash.h"
 #include "plc_memory.h"
+#include "plc_runtime.h"
 #include "board_clock.h"
 
 #include <stdio.h>
@@ -95,8 +96,8 @@ __root const u8 PLC_ROM[110] = {
 const u8 PLC_ROM[110] __attribute__((section(".plc_rom"), used)) = {
 #endif
 // The starting address of FLASH is PLC information **************************
-// The first 0X02 indicates that the PLC is //16K steps, password area and difference area.
-MAXSTEP / 1000,0x00, // 00 0x0000 -- SIZE IN STEP 16000
+// Legacy parameter capacity is in thousands of 16-bit instruction words.
+MAXSTEP / 1000,0x00, // 00 0x0000 -- configured capacity, not commercial PLC compatibility
 0x00,0x00, // 02        -- 
 0x00,0x00, // 04
 0x00,0x00, // 06
@@ -156,8 +157,8 @@ MAXSTEP / 1000,0x00, // 00 0x0000 -- SIZE IN STEP 16000
   
 const u16 special_d[130] = {
 0x00C8,  // D8000 - WDT 200mc
-0x627A,  // D8001 - (26210/0x6266) FX1N / (25210/0x627A) FX2N ver 2.10 / (16310/0x3FB6) FX3U ver 3.10
-MAXSTEP / 1000,  // D8002 - 16000 Steps
+0x6266,  // D8001 - inherited FX1N model code; GX compatibility is unverified
+MAXSTEP / 1000,  // D8002 - configured capacity in thousands of words
 0x0000,  // D8003 - Internal ( 0x10 - CPURAM, 0x00 - RAM, 0x01 - EPROM, 0x02 - EEPROM )
 0x0000,  // D8004 - Error
 0x0025,  // D8005 - Batary 3.7
@@ -262,8 +263,8 @@ MAXSTEP / 1000,  // D8002 - 16000 Steps
 0x0000,  // D8099 - 
 
 0x0064,  // D8100 - 
-0,//0x3FB6,  // D8101 - (16310/0x3FB6) FX3U ver 3.10
-MAXSTEP / 1000, // D8102 - 16000 Steps
+0x6266,  // D8101 - same legacy identity as D8001
+MAXSTEP / 1000, // D8102 - same configured capacity as D8002
 0x0000,  // D8103 - 
 0x0000,  // D8104 - 
 0x0000,  // D8105 - 
@@ -302,8 +303,6 @@ static int hex_digit(u8 c) {
   return -1;
 }
 
-extern u8  PLC_NEW_PROG;
-
 static u16 prog_write_buffer[1024];
 
 static u16 rx_count;
@@ -318,7 +317,7 @@ static volatile u8 UART_Sended = 1;
 static volatile u8 staging_busy;
 static u8 data_size, bctrl0, bctrl1;
 volatile u8 UART_SEND_READY;
-u8  PLC_UPDATE_PROG = 0;
+volatile u8 PLC_UPDATE_PROG = 0;
 
 void PLC_DATA_INIT(void) {
 u32 temp;
@@ -327,7 +326,7 @@ u32 temp;
     PLC_16BIT(Addr_D8000 + temp * 2) = special_d[temp];
   }
 
-  PLC_8BIT(Addr_M8) = 0x09;	// Turn the M8000 M8003 ON
+  PLC_8BIT(Addr_M8) = 0x0A; // Boot STOP (M8001/M8003), including after interrupted downloads.
   bctrl0 = 255;
   bctrl1 = 255;
 }
@@ -558,6 +557,17 @@ static bool build_monitor(void) {
   return true;
 }
 
+/* M8000..M8007 share a byte updated by main. IRQ writes/RMW would lose queued
+ * RUN/STOP or scan status transitions, even when touching another bit. */
+static bool writable_ram(u32 offset, u32 length) {
+  return plc_ram_range(offset, length) &&
+         !(length && offset <= Addr_M8 && offset + length > Addr_M8);
+}
+
+static bool writable_bit(u32 bit) {
+  return plc_ram_range(bit >> 3, 1U) && (bit >> 3) != Addr_M8;
+}
+
 void Process_switch(void) {
 u32 temp, decoded_count;
 u8 payload[sizeof(rx_data) / 2U];
@@ -576,13 +586,17 @@ u8 payload[sizeof(rx_data) / 2U];
     }
     prog_address = (digits[0] << 4) | digits[1] |
                    (digits[2] << 12) | (digits[3] << 8);
-    if (!plc_ram_range(prog_address >> 3, 1U)) goto reject;
+    if (!writable_bit(prog_address)) goto reject;
     if (rx_data[4] == '8') PLC_BIT_OFF(prog_address);
     else switch (prog_address) {
       case 0x0E23: break;
-      case 0x0E24: PLC_8BIT(Addr_M8) = 0x09; PLC_UPDATE_PROG = 0; break;
-      case 0x0E25: PLC_8BIT(Addr_M8) = 0x0A; break;
-      default: PLC_8BIT(Addr_M8) = 0x09; PLC_BIT_ON(prog_address); break;
+      case 0x0E24:
+        /* RUN may not execute a half-staged program or hide a failed flush. */
+        if (!flush_program()) goto reject;
+        PLC_UPDATE_PROG = 0;
+        PLC_Runtime_RequestRun(1); break;
+      case 0x0E25: PLC_Runtime_RequestRun(0); break;
+      default: PLC_BIT_ON(prog_address); break;
     }
     tx_data[0] = 0x06;
     tx_count = 1;
@@ -599,9 +613,11 @@ u8 payload[sizeof(rx_data) / 2U];
   }
 
   switch (rx_data[3]) {
-    case '0': case '1': if (decoded_count < 3U) goto reject; break;
-    case '7': case '8': if (decoded_count < 2U) goto reject; break;
-    case '4': case 'B': break;
+    case '0': if (decoded_count != 3U) goto reject; break;
+    case '1': if (decoded_count < 3U) goto reject; break;
+    case '7': case '8': if (decoded_count != 2U) goto reject; break;
+    case '4': break; /* Legacy no-op handshake, optional even-length payload. */
+    case 'B': if (decoded_count != 0U) goto reject; break;
     case 'E': if (decoded_count < 1U) goto reject; break;
     default: goto reject;
   }
@@ -620,7 +636,7 @@ u8 payload[sizeof(rx_data) / 2U];
       break;
 
     case 0x31:
-      if (!plc_ram_range(prog_address, data_size) || decoded_count < 3U + data_size) goto reject;
+      if (!writable_ram(prog_address, data_size) || decoded_count != 3U + data_size) goto reject;
       for ( temp = 0; temp < data_size; temp++ ) {
         PLC_8BIT(temp + prog_address) = payload[3 + temp];
       }
@@ -635,12 +651,12 @@ u8 payload[sizeof(rx_data) / 2U];
       break;
 
     case 0x37:
-      if (!plc_ram_range(prog_address >> 3, 1U)) goto reject;
+      if (!writable_bit(prog_address)) goto reject;
       PLC_BIT_ON(prog_address);
       break;
 
     case 0x38:
-      if (!plc_ram_range(prog_address >> 3, 1U)) goto reject;
+      if (!writable_bit(prog_address)) goto reject;
       PLC_BIT_OFF(prog_address);
       break;
 
@@ -650,11 +666,14 @@ u8 payload[sizeof(rx_data) / 2U];
 
     case 0x45: // -- Exx -- PC_OPTION_PROG
       switch (payload[0]) {
-        case 0x00: case 0x01: case 0x10: case 0x11:
-          if (decoded_count < 4U) goto reject;
+        case 0x00: case 0x01:
+          if (decoded_count != 4U) goto reject;
           break;
-        case 0x41: if (decoded_count < 5U) goto reject; break;
-        case 0x42: case 0x60: case 0x61: case 0x62: case 0x63: case 0x64: break;
+        case 0x10: case 0x11: if (decoded_count < 4U) goto reject; break;
+        case 0x41: if (decoded_count != 5U) goto reject; break;
+        case 0x42: case 0x60: case 0x61: case 0x62: case 0x63: case 0x64:
+          if (decoded_count != 1U) goto reject;
+          break;
         default: goto reject;
       }
       data_size = decoded_count >= 4U ? payload[3] : 0U;
@@ -674,13 +693,13 @@ u8 payload[sizeof(rx_data) / 2U];
           }
           case 0x10:
 // -- E10 -- PC_WRITE_Parameter
-            if (decoded_count < 4U + data_size) goto reject;
+            if (decoded_count != 4U + data_size || prog_address >= 0x8000U) goto reject;
             if ( prog_address < 0x8000 ) { // 0xE420 - Comments
 
               if ( prog_address > 0x3FFF )
                 prog_address -= 0x2000;
 
-              if (!plc_ram_range(prog_address, data_size) || decoded_count < 4U + data_size) goto reject;
+              if (!writable_ram(prog_address, data_size) || decoded_count < 4U + data_size) goto reject;
               for ( temp = 0; temp < data_size; temp++)
                 PLC_8BIT(prog_address + temp) = payload[4 + temp];
             }
@@ -696,13 +715,13 @@ u8 payload[sizeof(rx_data) / 2U];
 
           case 0x11:
 // -- E11 -- PC_WRITE_PROG
-            if (decoded_count < 4U + data_size) goto reject;
+            if (decoded_count != 4U + data_size || data_size == 0U) goto reject;
             if (prog_address >= 0x8000U) {
               prog_address -= 0x8000U;
               if ((prog_address & 1U) || (data_size & 1U) ||
                   prog_address >= PLC_PROGRAM_BLOCKS * PLC_FLASH_BLOCK_SIZE ||
                   data_size > PLC_PROGRAM_BLOCKS * PLC_FLASH_BLOCK_SIZE - prog_address) goto reject;
-              PLC_8BIT(Addr_M8) = 0x0A;
+              PLC_Runtime_RequestRun(0);
               PLC_UPDATE_PROG = 1;
               PLC_NEW_PROG = 1;
               for (temp = 0; temp < data_size; temp += 2U) {
@@ -717,8 +736,8 @@ u8 payload[sizeof(rx_data) / 2U];
                   payload[4 + temp] | ((u16)payload[5 + temp] << 8);
               }
             } else {
-              if (!plc_ram_range(prog_address, data_size)) goto reject;
-              PLC_8BIT(Addr_M8) = 0x0A;
+              if (!writable_ram(prog_address, data_size)) goto reject;
+              PLC_Runtime_RequestRun(0);
               PLC_UPDATE_PROG = 1;
               for (temp = 0; temp < data_size; temp++)
                 PLC_8BIT(temp + prog_address) = payload[4 + temp];
@@ -736,6 +755,8 @@ u8 payload[sizeof(rx_data) / 2U];
 
           case 0x60:
 // -- E60 -- Clear flash
+            PLC_Runtime_RequestRun(0);
+            PLC_UPDATE_PROG = PLC_NEW_PROG = 1;
             /* Clearing explicitly discards the pending download. */
             bctrl0 = bctrl1 = 255U;
             if (!backup_block(0)) goto reject;
@@ -820,46 +841,27 @@ void TX_Process(void) {
 }
 
 void RX_Process(void) {   
-static u32 sum, f = 1;
+u32 sum;
 u32 temp;
 
   /* Always consume DR, even while dropping input. The DMA source must stay
    * immutable until completion; a response waiting for main also owns it.
    * Busy input is dropped, not queued. A new STX is required afterwards. */
-  temp = 0x7FU & USART1->DR;
+  temp = 0xFFU & USART1->DR;
   if (!UART_Sended || UART_SEND_READY || staging_busy) { rx_count = 0; return; }
   rx_data[0] = (char)temp;
 
   if ( rx_data[0] == 0X05 ) {
-    goto send_ok;
-
-//    rx_count = 0;
-
-//    tx_count = 1;
-
+    rx_count = 0;
+    tx_data[0] = 0x06;
+    tx_count = 1;
+    TX_Process();
+    return;
   } else if ( rx_data[0] == 0X02 ) {
     rx_count = 0x01;
   } else if ( rx_count == 0 ) {
-    if ( f == 1 ) {
-      usart(19200);
-
-      f = 0;
-
-      goto send_ok;
-//      rx_count = 0;
-
-//      tx_count = 1;
-
-    } else if ( f == 0 ) {
-      usart(9600);
-
-      f = 1;
-send_ok:
-      rx_count = 0;
-      tx_data[0] = 0x06;
-      tx_count = 1;
-      TX_Process();
-    }    
+    /* Noise is not a baud-negotiation command. Keep the configured 19200 8N1. */
+    return;
   }
 
   if ( rx_count > 0 ) {

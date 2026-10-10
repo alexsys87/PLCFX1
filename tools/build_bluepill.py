@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Build a Cortex-M3 bare-metal image for STM32F103C8 (GNU Arm toolchain).
+
+Uses the checked-in STM32F103xB vector list and a real C reset adapter.
+This is a flashable build, not proof of hardware operation or an IAR build.
+"""
+import argparse
+from pathlib import Path
+import re
+import shutil
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+LINKER = '''
+ENTRY(Reset_Handler)
+MEMORY {
+ FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 48K
+ RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 7K
+ STEPS (rw) : ORIGIN = 0x20001C00, LENGTH = 1K
+ PLC (rw) : ORIGIN = 0x20002000, LENGTH = 12K
+ PROGRAM (rx) : ORIGIN = 0x0800C000, LENGTH = 14K
+}
+SECTIONS {
+ .vectors : { KEEP(*(.vectors)) } > FLASH
+ .text : { *(.text*) *(.rodata*) } > FLASH
+ .ARM.extab : { *(.ARM.extab*) } > FLASH
+ .ARM.exidx : { *(.ARM.exidx*) } > FLASH
+ .data : { _sdata = .; *(.data*) _edata = .; } > RAM AT> FLASH
+ _sidata = LOADADDR(.data);
+ .bss (NOLOAD) : { _sbss = .; *(.bss*) *(COMMON) . = ALIGN(8); _ebss = .; } > RAM
+ .stack ORIGIN(RAM) + LENGTH(RAM) - 2048 (NOLOAD) : {
+  _stack_bottom = .; . += 2048; _stack_top = .;
+ } > RAM
+ .plc_steps (NOLOAD) : { KEEP(*(.plc_steps)) } > STEPS
+ .plc_ram (NOLOAD) : { KEEP(*(.plc_ram)) } > PLC
+ .plc_rom : { KEEP(*(.plc_rom)) } > PROGRAM
+ ASSERT(_ebss <= _stack_bottom, "Ordinary RAM overlaps stack")
+ ASSERT(SIZEOF(.plc_rom) == 110, "Unexpected factory program header size")
+ ASSERT(SIZEOF(.plc_steps) == 1024, "Wrong step state reservation")
+ ASSERT(SIZEOF(.plc_ram) == 12288, "Wrong PLC RAM reservation")
+}
+'''
+RESET = '''
+#include <stdint.h>
+extern uint8_t _sidata, _sdata, _edata, _sbss, _ebss;
+extern void SystemInit(void);
+extern int main(void);
+void Reset_Handler(void) {
+ /* Byte copies do not require aligned Flash LMA or a rounded data size. */
+ uint8_t *src = &_sidata, *dst;
+ for (dst = &_sdata; dst < &_edata;) *dst++ = *src++;
+ for (dst = &_sbss; dst < &_ebss;) *dst++ = 0;
+ SystemInit();
+ (void)main();
+ for (;;) {}
+}
+'''
+
+def run(args):
+    subprocess.run([str(x) for x in args], check=True)
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, default=ROOT / 'build/gcc')
+    args = parser.parse_args()
+    cc = shutil.which('arm-none-eabi-gcc')
+    if not cc:
+        raise SystemExit('Install gcc-arm-none-eabi and newlib first.')
+    build = args.output.resolve()
+    build.mkdir(parents=True, exist_ok=True)
+    startup = (ROOT / 'CMSIS/device/startup_stm32f103xb.s').read_text()
+    vectors = re.findall(r'^\s+DCD\s+(\S+)', startup, re.M)
+    if len(vectors) != 59:
+        raise SystemExit('Unexpected STM32F103xB vector count')
+    handlers = sorted(set(vectors[1:]) - {'0', 'Reset_Handler'})
+    assembly = '.syntax unified\n.cpu cortex-m3\n.thumb\n.section .vectors,"a"\n'
+    assembly += '.word _stack_top\n' + ''.join('.word '+x+'\n' for x in vectors[1:])
+    assembly += '.section .text.Default_Handler,"ax"\n.thumb_func\nDefault_Handler:\nb .\n'
+    for name in handlers:
+        assembly += f'.weak {name}\n.thumb_set {name},Default_Handler\n'
+    (build / 'vectors.S').write_text(assembly)
+    (build / 'reset.c').write_text(RESET)
+    (build / 'bluepill.ld').write_text(LINKER)
+    flags = ['-mcpu=cortex-m3', '-mthumb', '-Os', '-ffunction-sections',
+             '-fdata-sections', '-DSTM32F103xB', '-I'+str(ROOT/'inc'),
+             '-I'+str(ROOT/'CMSIS'), '-I'+str(ROOT/'CMSIS/device')]
+    sources = sorted([*ROOT.glob('App/*.c'), *ROOT.glob('src/*.c'),
+                      *ROOT.glob('src/*.C'), *ROOT.glob('CMSIS/device/*.c')])
+    sources += [build / 'reset.c']
+    objects = []
+    for i, source in enumerate(sources):
+        obj = build / f'{i}.o'
+        run([cc, *flags, '-x', 'c', '-std=c99', '-Wall', '-Wextra', '-c', source, '-o', obj])
+        objects.append(obj)
+    vector = build / 'vectors.o'
+    run([cc, *flags, '-c', build/'vectors.S', '-o', vector])
+    image = build / 'plc_fx1n_bluepill.elf'
+    run([cc, *flags, '-nostartfiles', '-Wl,--gc-sections',
+         '-Wl,-Map='+str(build/'plc_fx1n_bluepill.map'), '-T', build/'bluepill.ld',
+         *objects, vector, '-lc', '-lgcc', '-o', image])
+    for fmt, suffix in [('ihex', 'hex'), ('binary', 'bin')]:
+        run(['arm-none-eabi-objcopy', '-O', fmt, image, build/f'plc_fx1n_bluepill.{suffix}'])
+    run(['arm-none-eabi-size', '-A', image])
+    print('PASS: flashable GNU Arm image built; hardware operation remains unverified.')
+    print('Program at 0x08000000 with ST-Link/SWD. Factory image replaces PLC header/program.')
+
+if __name__ == '__main__':
+    main()
