@@ -1,5 +1,12 @@
 # Minimal FX1N-style runtime: supported local encoding
 
+**This document describes the default `PLC_RUNTIME_EXPERIMENTAL=0` profile.**
+The separately selected legacy experimental profile is documented in
+[experimental-instructions.md](experimental-instructions.md). Its restored
+handlers do not inherit the minimal runtime's complete-scan validation or
+instruction semantics. An unsupported minimal opcode never falls through into
+the legacy state machine.
+
 This is an auditable educational subset, **not an FX1N replacement**, an official
 instruction-set emulator, or a safety-rated controller. No hardware validation or
 GX Developer/GX Works interoperability claim follows from the host tests.

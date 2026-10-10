@@ -164,7 +164,7 @@ def check(preprocess):
     check_memory()
     for folder in ("App", "inc", "src", "CMSIS"):
         for path in (ROOT / folder).rglob("*"):
-            if path.is_file() and path.suffix.lower() in (".c", ".h", ".s"):
+            if path.is_file() and path.suffix.lower() in (".c", ".h", ".s", ".inc"):
                 text = path.read_text(encoding="utf-8")
                 if folder in ("App", "inc", "src"):
                     code = COMMENT_OR_LITERAL.sub(lambda m: m[0] if m[0].startswith('"') else " ", text)

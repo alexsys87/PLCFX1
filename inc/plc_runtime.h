@@ -8,7 +8,11 @@ typedef enum {
   PLC_RUNTIME_OPERAND = 2,
   PLC_RUNTIME_BOUNDS = 3,
   PLC_RUNTIME_STACK = 4,
-  PLC_RUNTIME_NO_END = 5
+  PLC_RUNTIME_NO_END = 5,
+  PLC_RUNTIME_LEGACY_MISSING = 6,
+  PLC_RUNTIME_LEGACY_INCOMPLETE = 7,
+  PLC_RUNTIME_LEGACY_UNSUPPORTED = 8,
+  PLC_RUNTIME_LEGACY_BUDGET = 9
 } plc_runtime_error;
 
 /* Init resets runtime-private state, not the PLC register image or RUN request. */

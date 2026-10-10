@@ -1,3 +1,7 @@
+#include "plc_runtime_profile.h"
+#if PLC_RUNTIME_EXPERIMENTAL
+#include "ladder_legacy.inc"
+#else
 /* Bounded, deliberately small interpreter for this repository's machine code.
  * See docs/runtime-subset.md. This is not a general FX1N implementation. */
 #include "PLC_Dialogue.h"
@@ -407,3 +411,5 @@ void PLC_Main_Parser(void) {
   PLC_PRG_STOP = 1;
 }
 void PLC_ProInstructParse(void) { PLC_Main_Parser(); }
+
+#endif /* PLC_RUNTIME_EXPERIMENTAL */

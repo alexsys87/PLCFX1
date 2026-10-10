@@ -45,6 +45,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--optimization', default='-Os', choices=['-Os', '-O1', '-O2'])
+    parser.add_argument('--runtime', choices=['minimal', 'experimental'], default='minimal')
     args = parser.parse_args()
     compiler = shutil.which('arm-none-eabi-gcc')
     if not compiler:
@@ -68,6 +69,7 @@ def main():
         flags = ['-mcpu=cortex-m3', '-mthumb', args.optimization,
                  '-ffunction-sections', '-fdata-sections', '-DSTM32F103xB',
                  '-I'+str(ROOT/'inc'), '-I'+str(ROOT/'CMSIS'), '-I'+str(ROOT/'CMSIS/device')]
+        flags += ['-DPLC_RUNTIME_EXPERIMENTAL=' + str(int(args.runtime == 'experimental'))]
         sources = sorted([*ROOT.glob('App/*.c'), *ROOT.glob('src/*.c'),
                           *ROOT.glob('src/*.C'), *ROOT.glob('CMSIS/device/*.c')])
         objects = []

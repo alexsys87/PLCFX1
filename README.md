@@ -1,4 +1,4 @@
-# PLCFX1 — minimal FX1N-style bench PLC
+# PLCFX1 — FX1N-style bench PLC with experimental legacy commands
 
 Register-only firmware for **STM32F103C8 BluePill: 64 KB Flash / 20 KB SRAM**.
 No HAL or Standard Peripheral Library. The immediate goal is a reproducible
@@ -31,16 +31,25 @@ The example is `LD M8000; OUT M0; END`; success includes M0 becoming true.
 The second example, `examples/clock_y0.hex`, copies M8013 to Y0/PB0. It needs
 no load when monitored over UART. PC13 is the RUN status LED, **not Y0**.
 
-## Interpreter
+## Interpreter profiles
 
-The previous broad but unsafe interpreter has been replaced with a bounded,
-explicit subset. See **[runtime-subset.md](docs/runtime-subset.md)** for exact
+The **default minimal profile** uses a bounded, explicit subset. See
+**[runtime-subset.md](docs/runtime-subset.md)** for exact
 commands, encodings and restrictions. Basic contact/coil logic, branch stacks,
 PLS/PLF, timers T0..255, ordinary counters C0..199, MOV and INC form the initial
 test surface. Unsupported instructions fail to STOP; they do not fall through
 to operand words or empty handlers. Scan length, operand ranges and stacks are
 checked. Physical outputs are refreshed only after a complete scan and gated
 off in STOP. This is not a certified safety mechanism or a hardware watchdog.
+
+The removed broad interpreter is also restored as a separately selected
+**experimental legacy profile**, including its incomplete handlers and known
+defects. It is executable code, not a compatibility claim. See
+**[experimental-instructions.md](docs/experimental-instructions.md)** for the
+restored dispatch inventory, profile selection and limitations. Unsupported or
+unfinished commands must not be treated as verified FX1N behavior. Do not use
+the experimental profile to control loads. Keep the minimal profile for the
+first connection/upload test.
 
 The [Mitsubishi instruction tutorial](Tutorial%205%20The%20Mitsubishi%20FX1S%20and%20FX1N%20Instruction%20System%20(V2.0).md)
 documents the official model requirements, not the firmware's implemented subset.
@@ -84,7 +93,18 @@ With `arm-none-eabi-gcc`, newlib and binutils installed:
 python3 tools/build_bluepill.py
 ```
 
-`build/gcc/plc_fx1n_bluepill.{elf,hex,bin}` are flashable MCU images. The reset
+To compile the restored broad interpreter instead, use:
+
+```sh
+python3 tools/build_bluepill.py --runtime experimental
+```
+
+The selected profile is a firmware build option, not a programming-UART command.
+Changing it requires reflashing the MCU. IAR profile selection is described in
+the experimental instruction guide.
+
+`build/minimal/plc_fx1n_bluepill.{elf,hex,bin}` are the default flashable MCU images;
+the experimental images are in `build/experimental/`. The reset
 adapter initializes C data/BSS and uses the checked-in STM32F103xB vector list.
 Flash the BIN at **0x08000000**, or use the address-bearing Intel HEX. These
 firmware files are **not** the raw-byte `.hex` PLC examples accepted by the client.
