@@ -11,3 +11,11 @@ __pycache__/
 
 # GNU Arm firmware outputs.
 build/
+
+# Visual Studio emulator build outputs and runtime files.
+.vs/
+*.user
+emulator/bin/
+emulator/obj/
+emulator/**/*.log
+emulator/**/plcfx1_flash.bin*

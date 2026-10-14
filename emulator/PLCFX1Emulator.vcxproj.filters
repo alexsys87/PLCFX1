@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Emulator">
+      <UniqueIdentifier>{F57FE065-5DD8-49EE-895C-5D0FD666CABE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Firmware">
+      <UniqueIdentifier>{AC8CDD86-B993-43E2-A481-EA6B2CD918D9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Firmware headers">
+      <UniqueIdentifier>{619438DF-4A90-43CD-9A8A-22F4C2A6384A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Docs">
+      <UniqueIdentifier>{53EF9037-585C-479C-B9E9-3FDB0BC78F54}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\emu_board.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="src\emu_io.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="src\emu_log.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="src\emu_main.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="src\emu_memory.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="src\emu_protocol.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="src\emu_rtc.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="src\emu_serial.c">
+      <Filter>Emulator</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_serial_protocol.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_runtime_minimal.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_arithmetic.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_compare_contacts.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_compare_move.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_data.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_dispatch.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_float.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_flow.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_logic.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_operands.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_rotate_shift.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_scan.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_time.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_timers.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\plc_exp_unsupported.c">
+      <Filter>Firmware</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="host\platform.h">
+      <Filter>Emulator</Filter>
+    </ClInclude>
+    <ClInclude Include="src\emu_board.h">
+      <Filter>Emulator</Filter>
+    </ClInclude>
+    <ClInclude Include="src\emu_io.h">
+      <Filter>Emulator</Filter>
+    </ClInclude>
+    <ClInclude Include="src\emu_log.h">
+      <Filter>Emulator</Filter>
+    </ClInclude>
+    <ClInclude Include="src\emu_memory.h">
+      <Filter>Emulator</Filter>
+    </ClInclude>
+    <ClInclude Include="src\emu_protocol.h">
+      <Filter>Emulator</Filter>
+    </ClInclude>
+    <ClInclude Include="src\emu_serial.h">
+      <Filter>Emulator</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\board_clock.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_exp_guard.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_exp_handlers.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_exp_internal.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_flash.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_io.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_memory.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_memory_map.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_rtc.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_runtime.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_runtime_profile.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_serial_protocol.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\plc_special_devices.h">
+      <Filter>Firmware headers</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md">
+      <Filter>Docs</Filter>
+    </None>
+    <None Include="tools\error_scenarios.py">
+      <Filter>Docs</Filter>
+    </None>
+  </ItemGroup>
+</Project>
