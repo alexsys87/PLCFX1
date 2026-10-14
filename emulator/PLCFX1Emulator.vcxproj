@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="DebugExperimental|Win32">
+      <Configuration>DebugExperimental</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="DebugExperimental|x64">
+      <Configuration>DebugExperimental</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ReleaseExperimental|Win32">
+      <Configuration>ReleaseExperimental</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ReleaseExperimental|x64">
+      <Configuration>ReleaseExperimental</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{59E7F425-C0DE-45A2-BBFD-A20E3FE1B23B}</ProjectGuid>
+    <RootNamespace>PLCFX1Emulator</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <!-- Visual Studio 2026 toolset. Older Visual Studio versions: Project > Retarget solution. -->
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug' Or '$(Configuration)'=='DebugExperimental'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='ReleaseExperimental'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <!-- Interpreter profile: the *Experimental configurations build src/plc_exp_*.c instead of plc_runtime_minimal.c. -->
+  <PropertyGroup>
+    <PlcRuntimeExperimental>0</PlcRuntimeExperimental>
+    <PlcRuntimeExperimental Condition="'$(Configuration)'=='DebugExperimental' Or '$(Configuration)'=='ReleaseExperimental'">1</PlcRuntimeExperimental>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>PLCFX1Emulator</TargetName>
+    <!-- F5 starts the emulator on COM5; change it in Project Properties > Debugging > Command Arguments. -->
+    <LocalDebuggerCommandArguments>--port COM5</LocalDebuggerCommandArguments>
+    <LocalDebuggerWorkingDirectory>$(OutDir)</LocalDebuggerWorkingDirectory>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <!-- host\platform.h replaces the CMSIS device header; it must win over inc\platform.h. -->
+      <ForcedIncludeFiles>$(ProjectDir)host\platform.h</ForcedIncludeFiles>
+      <AdditionalIncludeDirectories>$(ProjectDir)host;$(ProjectDir)src;$(ProjectDir)..\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>PLC_RUNTIME_EXPERIMENTAL=$(PlcRuntimeExperimental);_CRT_SECURE_NO_WARNINGS;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Firmware idioms that are intended on the 32-bit target: integer-to-pointer casts of fixed
+           addresses (4312), narrowing assignments (4244, 4267), signed/unsigned mixes (4018, 4146, 4245, 4389). -->
+      <DisableSpecificWarnings>4018;4146;4244;4245;4267;4312;4389;4996;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- Keep the executable at its fixed base so the emulated flash (0x08000000) and SRAM
+           (0x20000000) address ranges stay free in the process. -->
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(UseDebugLibraries)'=='true'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(UseDebugLibraries)'!='true'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\emu_board.c" />
+    <ClCompile Include="src\emu_io.c" />
+    <ClCompile Include="src\emu_log.c" />
+    <ClCompile Include="src\emu_main.c" />
+    <ClCompile Include="src\emu_memory.c" />
+    <ClCompile Include="src\emu_protocol.c" />
+    <ClCompile Include="src\emu_rtc.c" />
+    <ClCompile Include="src\emu_serial.c" />
+    <ClCompile Include="..\src\plc_serial_protocol.c" />
+    <ClCompile Include="..\src\plc_runtime_minimal.c" />
+    <ClCompile Include="..\src\plc_exp_arithmetic.c" />
+    <ClCompile Include="..\src\plc_exp_compare_contacts.c" />
+    <ClCompile Include="..\src\plc_exp_compare_move.c" />
+    <ClCompile Include="..\src\plc_exp_data.c" />
+    <ClCompile Include="..\src\plc_exp_dispatch.c" />
+    <ClCompile Include="..\src\plc_exp_float.c" />
+    <ClCompile Include="..\src\plc_exp_flow.c" />
+    <ClCompile Include="..\src\plc_exp_logic.c" />
+    <ClCompile Include="..\src\plc_exp_operands.c" />
+    <ClCompile Include="..\src\plc_exp_rotate_shift.c" />
+    <ClCompile Include="..\src\plc_exp_scan.c" />
+    <ClCompile Include="..\src\plc_exp_time.c" />
+    <ClCompile Include="..\src\plc_exp_timers.c" />
+    <ClCompile Include="..\src\plc_exp_unsupported.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="host\platform.h" />
+    <ClInclude Include="src\emu_board.h" />
+    <ClInclude Include="src\emu_io.h" />
+    <ClInclude Include="src\emu_log.h" />
+    <ClInclude Include="src\emu_memory.h" />
+    <ClInclude Include="src\emu_protocol.h" />
+    <ClInclude Include="src\emu_serial.h" />
+    <ClInclude Include="..\inc\board_clock.h" />
+    <ClInclude Include="..\inc\plc_exp_guard.h" />
+    <ClInclude Include="..\inc\plc_exp_handlers.h" />
+    <ClInclude Include="..\inc\plc_exp_internal.h" />
+    <ClInclude Include="..\inc\plc_flash.h" />
+    <ClInclude Include="..\inc\plc_io.h" />
+    <ClInclude Include="..\inc\plc_memory.h" />
+    <ClInclude Include="..\inc\plc_memory_map.h" />
+    <ClInclude Include="..\inc\plc_rtc.h" />
+    <ClInclude Include="..\inc\plc_runtime.h" />
+    <ClInclude Include="..\inc\plc_runtime_profile.h" />
+    <ClInclude Include="..\inc\plc_serial_protocol.h" />
+    <ClInclude Include="..\inc\plc_special_devices.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" />
+    <None Include="tools\error_scenarios.py" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

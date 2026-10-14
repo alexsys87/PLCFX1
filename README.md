@@ -31,6 +31,14 @@ The example is `LD M8000; OUT M0; END`; success includes M0 becoming true.
 The second example, `examples/clock_y0.hex`, copies M8013 to Y0/PB0. It needs
 no load when monitored over UART. PC13 is the RUN status LED, **not Y0**.
 
+## PC emulator (no board needed)
+
+`emulator/PLCFX1Emulator.sln` is a Visual Studio 2026 C project that runs the real
+protocol and interpreter sources on Windows behind a COM port. Connect the client to the
+other end of a virtual null-modem pair (VSPD, com0com); every error (rejected requests
+with a decoded reason, PLC faults, serial and flash failures, crashes) goes to a log file.
+See **[emulator/README.md](emulator/README.md)**.
+
 ## Interpreter profiles
 
 The **default minimal profile** uses a bounded, explicit subset. See
