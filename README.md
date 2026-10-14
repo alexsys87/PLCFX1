@@ -1,4 +1,4 @@
-# PLCFX1 — FX1N-style bench PLC with experimental legacy commands
+# PLCFX1 — FX1N-style bench PLC with an experimental FX1N instruction profile
 
 Register-only firmware for **STM32F103C8 BluePill: 64 KB Flash / 20 KB SRAM**.
 No HAL or Standard Peripheral Library. The immediate goal is a reproducible
@@ -42,13 +42,17 @@ to operand words or empty handlers. Scan length, operand ranges and stacks are
 checked. Physical outputs are refreshed only after a complete scan and gated
 off in STOP. This is not a certified safety mechanism or a hardware watchdog.
 
-The removed broad interpreter is also restored as a separately selected
-**experimental legacy profile**, including its incomplete handlers and known
-defects. It is executable code, not a compatibility claim. See
+The broad FX1N-style instruction layer is a separately selected **experimental
+profile** (the `src/plc_exp_*.c` modules). Its operand decoder and its ~190 handlers (moves, arithmetic with flags,
+rotate/shift/FIFO, BCD/Gray, float, time, sorting/searching, MC, STL, FOR/NEXT,
+CALL, comparison contacts, 32-bit counters, ...) were rewritten and are covered by
+host known-answer tests and a per-slot fuzzer. 43 instructions that need hardware this
+board lacks (interrupts, pulse/high-speed counters, special blocks, serial, analog) or
+have no verified semantics stop the PLC with an "unsupported" fault instead of doing
+nothing. It is still **not validated on a board or against GX Developer output**. See
 **[experimental-instructions.md](docs/experimental-instructions.md)** for the
-restored dispatch inventory, profile selection and limitations. Unsupported or
-unfinished commands must not be treated as verified FX1N behavior. Do not use
-the experimental profile to control loads. Keep the minimal profile for the
+exact instruction list, encodings, profile selection, measured sizes and limitations.
+Do not use the experimental profile to control loads. Keep the minimal profile for the
 first connection/upload test.
 
 The [Mitsubishi instruction tutorial](Tutorial%205%20The%20Mitsubishi%20FX1S%20and%20FX1N%20Instruction%20System%20(V2.0).md)
@@ -136,12 +140,40 @@ Automatic retained-data save/restore is **not enabled in this minimal boot path*
 M/D state is volatile across reset. Legacy retention helpers remain independently
 tested, but are not a guarantee of power-loss retention.
 
+## Source layout
+
+Every source file is a plain `.c` or `.h` file named after its job (no `.inc` includes, no
+upper-case extensions), and all comments are English; `tools/check_project.py` rejects
+non-ASCII or damaged comments in `App/`, `inc/` and `src/`. Both interpreter profiles stay in
+the project at all times: the profile that is not selected by `PLC_RUNTIME_EXPERIMENTAL`
+compiles to an empty unit.
+
+| Path | Role |
+|---|---|
+| `App/main.c` | Entry point: board bring-up and the PLC super-loop |
+| `src/board_clock.c`, `inc/board_clock.h` | 72 MHz clock tree with bounded waits and fallbacks |
+| `src/plc_io.c`, `inc/plc_io.h` | GPIO: debounced X inputs, Y outputs, per-scan snapshots |
+| `src/plc_rtc.c`, `inc/plc_rtc.h` | Real-time clock and the clock registers D8013..D8019 |
+| `src/plc_flash.c`, `inc/plc_flash.h` | Erase/program of the PLC program blocks in Flash |
+| `src/plc_memory.c`, `inc/plc_memory.h` | Fixed-address RAM areas and range checks |
+| `src/plc_serial_protocol.c`, `inc/plc_serial_protocol.h` | Programming-port protocol (USART1 + DMA) |
+| `inc/plc_memory_map.h` | Layout of the PLC register image and the bit/word access macros |
+| `inc/plc_special_devices.h` | Names of the special registers D8000.. and relays M8000.. |
+| `inc/plc_runtime.h`, `inc/plc_runtime_profile.h` | Interface of the scan engine; profile selection |
+| `src/plc_runtime_minimal.c` | Default minimal interpreter (21 mnemonics) |
+| `src/plc_exp_*.c`, `inc/plc_exp_*.h` | Experimental interpreter, one module per instruction family (table in [experimental-instructions.md](docs/experimental-instructions.md)) |
+| `inc/platform.h` | Target platform header (CMSIS device header and integer names) |
+| `tools/` | Build and check scripts and host tests; their C sources are in `tools/tests/` and `tools/fixtures/` |
+| `docs/`, `examples/` | Documentation; raw-byte PLC example programs for the client |
+
 ## Host validation
 
 ```sh
 python3 tools/check_project.py --preprocess
 python3 tools/check_arm_build.py
+python3 tools/instruction_inventory.py
 python3 tools/test_runtime.py
+python3 tools/test_experimental.py
 python3 tools/test_protocol.py
 python3 tools/test_io.py
 python3 tools/test_rtc.py --sanitize

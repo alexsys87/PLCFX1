@@ -36,7 +36,7 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     fixtures = root / "tools" / "fixtures" / "rtc"
-    source = (root / "src" / "RTC.C").read_text()
+    source = (root / "src" / "plc_rtc.c").read_text()
     compiler = shlex.split(os.environ.get("CC", ""))
     if not compiler:
         compiler = [next((c for c in ("cc", "gcc", "clang") if shutil.which(c)), "")]
@@ -53,9 +53,9 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="rtc-regression-") as temporary:
         work = Path(temporary)
-        shutil.copyfile(fixtures / "main.h", work / "main.h")
-        (work / "PLC_Dialogue.h").write_text("")
-        (work / "PLC_CONF.H").write_text("")
+        shutil.copyfile(fixtures / "mock_environment.h", work / "mock_environment.h")
+        (work / "plc_memory_map.h").write_text("")
+        (work / "plc_special_devices.h").write_text("")
         harness = ((fixtures / "harness_prefix.c").read_text() + host_source +
                    (fixtures / "harness_tests.c").read_text())
         (work / "test.c").write_text(harness)
@@ -87,9 +87,9 @@ def main():
             run([arm, "-x", "c", "-std=c99", "-mcpu=cortex-m3", "-mthumb",
                  "-DSTM32F103xB", "-Wall", "-Wextra", "-Werror",
                  "-I" + str(root / "inc"), "-I" + str(root / "CMSIS" / "device"),
-                 "-I" + str(root / "CMSIS"), "-c", str(root / "src" / "RTC.C"),
+                 "-I" + str(root / "CMSIS"), "-c", str(root / "src" / "plc_rtc.c"),
                  "-o", str(work / "rtc.o")])
-            print("PASS: unchanged production RTC.C compiled for Cortex-M3 with project headers")
+            print("PASS: unchanged production plc_rtc.c compiled for Cortex-M3 with project headers")
         else:
             print("SKIP: optional ARM compile (--skip-arm or arm-none-eabi-gcc not installed)")
 

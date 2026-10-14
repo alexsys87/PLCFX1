@@ -10,11 +10,11 @@ python3 tools/test_rtc.py --skip-arm  # host tests only
 
 Requirements: Python 3 standard library and a GCC-compatible host C compiler
 (`cc`, `gcc`, `clang`, or the `CC` environment variable). If available,
-`arm-none-eabi-gcc` also compiles unchanged `src/RTC.C` with the real project
+`arm-none-eabi-gcc` also compiles unchanged `src/plc_rtc.c` with the real project
 headers. Temporary files are automatically removed. No Tasklet paths, network,
 external Python modules, or ARM compiler are required for host testing.
 
-`main.h` maps the PLC date words into volatile mock storage and uses the
+`mock_environment.h` maps the PLC date words into volatile mock storage and uses the
 repository's CMSIS device definitions. `harness_prefix.c` supplies mock
 registers and deterministic RTC/LSE status transitions. `harness_tests.c`
 contains assertions. The runner injects transitions only into a temporary

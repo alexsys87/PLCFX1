@@ -9,6 +9,9 @@ model value (`0x6266`) is not evidence of compatibility. The example instruction
 words match this project's local interpreter, not independently verified
 Mitsubishi bytecode. No board or live programming-software test has been done.
 
+The protocol is implemented in `src/plc_serial_protocol.c`; the command table and the frame
+format are documented at the top of that file.
+
 No hardware is needed for the host tests below. An actual connection later needs
 a correctly flashed BluePill and a USB-to-**3.3 V TTL UART** adapter. Do not use
 an RS232 voltage-level adapter, a 5 V UART, a 24 V PLC signal or an RS422 cable
@@ -43,7 +46,7 @@ From the repository root, on Linux with a C compiler and Python 3:
 python3 tools/test_protocol.py
 ```
 
-This compiles real `src/PLC_Com.c` with ASan/UBSan and exercises complete framed
+This compiles real `src/plc_serial_protocol.c` with ASan/UBSan and exercises complete framed
 requests, DMA ownership, malformed checksums/lengths, range errors, staging,
 Flash-error NAKs, retained-data CRC and stream resynchronization. A Python client
 then connects to that C implementation over process pipes and performs

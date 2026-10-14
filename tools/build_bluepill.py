@@ -66,7 +66,7 @@ def main():
     parser.add_argument('--output', type=Path,
                         help='Override profile-specific build/minimal or build/experimental directory.')
     parser.add_argument('--runtime', choices=['minimal', 'experimental'], default='minimal',
-                        help='Experimental restores unvalidated legacy handlers; minimal is the default.')
+                        help='Experimental selects the FX1N instruction profile (host-tested, not validated on hardware); minimal is the default.')
     args = parser.parse_args()
     cc = shutil.which('arm-none-eabi-gcc')
     if not cc:
@@ -103,9 +103,10 @@ def main():
              '-I'+str(source_root/'CMSIS'), '-I'+str(source_root/'CMSIS/device')]
     flags += ['-DPLC_RUNTIME_EXPERIMENTAL=' + str(int(args.runtime == 'experimental'))]
     if args.runtime == 'experimental':
-        print('WARNING: experimental legacy instruction profile; not validated or safe for loads.', flush=True)
+        print('WARNING: experimental FX1N instruction profile; host-tested only, not validated on hardware or safe for loads.', flush=True)
+    # Every module is compiled in both profiles; the modules of the other profile are empty units.
     sources = sorted([*source_root.glob('App/*.c'), *source_root.glob('src/*.c'),
-                      *source_root.glob('src/*.C'), *source_root.glob('CMSIS/device/*.c')])
+                      *source_root.glob('CMSIS/device/*.c')])
     sources += [build / 'reset.c']
     objects = []
     for i, source in enumerate(sources):

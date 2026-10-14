@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run complete scans of the real ladder.c using guarded fixed-address RAM."""
+"""Run complete scans of the real plc_runtime_minimal.c using guarded fixed-address RAM."""
 import os
 from pathlib import Path
 import subprocess

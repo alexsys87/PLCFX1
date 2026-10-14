@@ -1,59 +1,86 @@
-#include "main.h"
+/**
+ * @file main.c
+ * @brief Firmware entry point: board bring-up and the PLC super-loop (BluePill, STM32F103C8T6).
+ *
+ * Boot sequence: clocks and peripherals -> GPIO -> RTC -> retained data -> runtime in STOP.
+ * The PLC then runs forever as a cooperative loop; a 1 ms timer interrupt only maintains
+ * time bases (scan clock, timers, input debounce):
+ *
+ *   loop:  sample inputs -> run one scan -> start a pending serial reply -> drive outputs
+ *          -> update the RUN/ERR LEDs -> refresh the calendar registers once per second
+ *
+ * RUN/STOP is a software state controlled by the programming protocol (see
+ * plc_serial_protocol.c); the PLC boots in STOP, including after a failed download.
+ */
 #include "board_clock.h"
+#include "plc_io.h"
 #include "plc_memory.h"
-#include "PLC_CONF.H"
-#include "PLC_Dialogue.h"
+#include "plc_memory_map.h"
+#include "plc_rtc.h"
 #include "plc_runtime.h"
+#include "plc_serial_protocol.h"
+#include "plc_special_devices.h"
 
-extern volatile u8 UART_SEND_READY;
-extern char tx_data[144];
-
-extern void X_filter(void);
-
+/** Milliseconds since reset, incremented by the 1 ms timer interrupt (saturates at 65535). */
 volatile u16 PLC_RUN_TIME;
-static volatile uint32_t uptime_ms;
 
-int main(void) { 
+static volatile uint32_t uptime_ms;      /* free-running millisecond counter (wraps after 49 days) */
 
+static void init_peripherals(void);
+
+/** Firmware entry point: initialize the hardware and the PLC, then run the scan loop forever. */
+int main(void)
+{
   plc_memory_init();
-  InitALL();
+  init_peripherals();
 
-  RUN_LED_ON;
+  RUN_LED_ON;                            /* lit while booting */
 
-  PLC_IO_config();                           // Outputs are low before becoming outputs.
+  PLC_IO_config();                       /* outputs are low before they become outputs */
   PLC_IO_Refresh();
-  RTC_Init();                                // Initialize the real-time clock.  
+  RTC_Init();                            /* initialize the real-time clock */
 
-  PLC_DATA_INIT();
-  PLC_Runtime_Init();                        // Boot in STOP, including after a bad download.
+  PLC_DATA_INIT();                       /* special registers and boot-in-STOP relay state */
+  PLC_Runtime_Init();                    /* boot in STOP, including after a bad download */
 
   RUN_LED_OFF;
 
   RTC_Get();
-  TIM2->CR1 = TIM_CR1_CEN;                    // Start ticks only after runtime initialization.
-  while(1) {
+  TIM2->CR1 = TIM_CR1_CEN;               /* start ticks only after runtime initialization */
+
+  while (1) {
     static uint32_t last_rtc;
 
-    PLC_IO_SampleInputs();
-    PLC_ProInstructParse();
+    PLC_IO_SampleInputs();               /* freeze the inputs for one complete scan */
+    PLC_ProInstructParse();              /* execute one scan of the PLC program */
 
-    if ( UART_SEND_READY )
-      TX_Process();
+    if (UART_SEND_READY)
+      TX_Process();                      /* start the DMA transmission of a prepared reply */
 
-    PLC_IO_Refresh();
-    if (PLC_Runtime_RunRequested() && (PLC_8BIT(Addr_M8) & 3U) == 1U && PLC_Runtime_LastError() == 0U) { RUN_LED_ON; }
-    else { RUN_LED_OFF; }
-    if (PLC_Runtime_LastError() != 0U) { ERR_LED_ON; }
-    else { ERR_LED_OFF; }
-    if ((uint32_t)(uptime_ms - last_rtc) >= 1000U) {
-      last_rtc = uptime_ms;
-      RTC_Get();
+    PLC_IO_Refresh();                    /* drive Y0..Y7 (forced low outside RUN) */
+
+    /* RUN LED: PLC running without a fault. ERR LED: a fault is latched. */
+    if (PLC_Runtime_RunRequested() && (PLC_8BIT(Addr_M8) & 3U) == 1U && PLC_Runtime_LastError() == 0U) {
+      RUN_LED_ON;
+    } else {
+      RUN_LED_OFF;
+    }
+    if (PLC_Runtime_LastError() != 0U) {
+      ERR_LED_ON;
+    } else {
+      ERR_LED_OFF;
     }
 
+    if ((uint32_t)(uptime_ms - last_rtc) >= 1000U) {
+      last_rtc = uptime_ms;
+      RTC_Get();                         /* refresh D8013..D8019 once per second */
+    }
   }
-}  
+}
 
-void InitALL(void) {
+/** Configure clocks, USART1 with DMA transmit, the status LEDs and the 1 ms PLC tick timer. */
+static void init_peripherals(void)
+{
   (void)board_clock_init();
 
   RCC->AHBENR |= RCC_AHBENR_DMA1EN;
@@ -62,7 +89,7 @@ void InitALL(void) {
   RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
   (void)RCC->APB2ENR;
   (void)RCC->APB1ENR;
-  AFIO->MAPR = AFIO_MAPR_SWJ_CFG_JTAGDISABLE; /* Keep SWD, release JTAG pins. */
+  AFIO->MAPR = AFIO_MAPR_SWJ_CFG_JTAGDISABLE; /* keep SWD, release the JTAG pins */
 
   /* USART1: PA9 alternate push-pull, PA10 floating input, 19200 baud, 8N1. */
   GPIOA->CRH = (GPIOA->CRH & ~((0xFUL << 4) | (0xFUL << 8))) |
@@ -108,11 +135,12 @@ void InitALL(void) {
   /* main enables the timer after PLC state and I/O have been initialized. */
 }
 
-void TIM2_IRQHandler(void) {
-  TIM2->SR = 0U;
+/** 1 ms tick: time bases for the runtime and the input debounce filter. */
+void TIM2_IRQHandler(void)
+{
+  TIM2->SR = 0U;                         /* acknowledge the update interrupt */
   uptime_ms++;
   if (PLC_RUN_TIME != UINT16_MAX) PLC_RUN_TIME++;
   PLC_Runtime_Tick1ms();
   X_filter();
 }
-

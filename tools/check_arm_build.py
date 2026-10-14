@@ -70,8 +70,9 @@ def main():
                  '-ffunction-sections', '-fdata-sections', '-DSTM32F103xB',
                  '-I'+str(ROOT/'inc'), '-I'+str(ROOT/'CMSIS'), '-I'+str(ROOT/'CMSIS/device')]
         flags += ['-DPLC_RUNTIME_EXPERIMENTAL=' + str(int(args.runtime == 'experimental'))]
+        # Every module is compiled in both profiles; the modules of the other profile are empty units.
         sources = sorted([*ROOT.glob('App/*.c'), *ROOT.glob('src/*.c'),
-                          *ROOT.glob('src/*.C'), *ROOT.glob('CMSIS/device/*.c')])
+                          *ROOT.glob('CMSIS/device/*.c')])
         objects = []
         for i, source in enumerate(sources):
             obj = build / f'{i}.o'
