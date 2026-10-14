@@ -2254,20 +2254,68 @@
         <file>
             <name>$PROJ_DIR$\..\src\plc_memory.c</name>
         </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_io.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_rtc.c</name>
+        </file>
     </group>
     <group>
-        <name>src</name>
+        <name>Programming link</name>
         <file>
-            <name>$PROJ_DIR$\..\src\ladder.c</name>
+            <name>$PROJ_DIR$\..\src\plc_serial_protocol.c</name>
+        </file>
+    </group>
+    <group>
+        <name>Runtime minimal</name>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_runtime_minimal.c</name>
+        </file>
+    </group>
+    <group>
+        <name>Runtime experimental</name>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_arithmetic.c</name>
         </file>
         <file>
-            <name>$PROJ_DIR$\..\src\PLC_Com.c</name>
+            <name>$PROJ_DIR$\..\src\plc_exp_compare_contacts.c</name>
         </file>
         <file>
-            <name>$PROJ_DIR$\..\src\PLC_IO.C</name>
+            <name>$PROJ_DIR$\..\src\plc_exp_compare_move.c</name>
         </file>
         <file>
-            <name>$PROJ_DIR$\..\src\RTC.C</name>
+            <name>$PROJ_DIR$\..\src\plc_exp_data.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_dispatch.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_float.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_flow.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_logic.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_operands.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_rotate_shift.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_scan.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_time.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_timers.c</name>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\..\src\plc_exp_unsupported.c</name>
         </file>
     </group>
     <group>

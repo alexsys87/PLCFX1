@@ -34,7 +34,8 @@ def option_states(config, name):
 
 
 def macro_value(path, name):
-    text = path.read_text(encoding="utf-8")
+    # Comments (including trailing documentation comments) must not hide the numeric value.
+    text = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
     match = re.search(r"^\s*#define\s+" + re.escape(name) +
                       r"\s+(0x[0-9a-fA-F]+|[0-9]+)[uUlL]*\s*$", text, re.M)
     assert match, f"Missing numeric memory definition {name}: {path}"
@@ -97,7 +98,7 @@ def check_memory():
         pattern = (r'#pragma\s+location\s*=\s*"' + re.escape(section) +
                    r'"\s+__no_init\s+uint8_t\s+' + variable + r'\[' + size + r'\]')
         assert re.search(pattern, memory), f"Missing IAR no-init reservation: {section}"
-    rom = (ROOT / "src/PLC_Com.c").read_text(encoding="utf-8")
+    rom = (ROOT / "src/plc_serial_protocol.c").read_text(encoding="utf-8")
     assert re.search(r'#pragma\s+location\s*=\s*"\.plc_rom"\s+__root\s+const\s+u8\s+PLC_ROM\[110\]', rom), "Missing PLC factory header"
 
 

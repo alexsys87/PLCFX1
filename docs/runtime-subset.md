@@ -1,17 +1,20 @@
 # Minimal FX1N-style runtime: supported local encoding
 
 **This document describes the default `PLC_RUNTIME_EXPERIMENTAL=0` profile.**
-The separately selected legacy experimental profile is documented in
-[experimental-instructions.md](experimental-instructions.md). Its restored
-handlers do not inherit the minimal runtime's complete-scan validation or
-instruction semantics. An unsupported minimal opcode never falls through into
-the legacy state machine.
+The separately selected experimental FX1N instruction profile is documented in
+[experimental-instructions.md](experimental-instructions.md). Its handlers do not
+inherit the minimal runtime's complete-program prevalidation or its instruction
+semantics. An unsupported minimal opcode never falls through into the
+experimental interpreter.
 
 This is an auditable educational subset, **not an FX1N replacement**, an official
 instruction-set emulator, or a safety-rated controller. No hardware validation or
 GX Developer/GX Works interoperability claim follows from the host tests.
 
 ## Integration and execution
+
+The interpreter is `src/plc_runtime_minimal.c`; its interface is `inc/plc_runtime.h` and the
+profile is selected in `inc/plc_runtime_profile.h`.
 
 `PLC_Runtime_Init()` initializes private state and pulse history without changing
 the PLC register image or RUN request. Call it after RAM/protocol initialization.
@@ -164,7 +167,7 @@ wraps after about 49.7 days; modulo-derived clock relay phase can jump at wrap.
 
 ## Tested complete-scan fixtures
 
-`python3 tools/test_runtime.py` compiles the **actual ladder.c**, not copied helper
+`python3 tools/test_runtime.py` compiles the **actual plc_runtime_minimal.c**, not copied helper
 functions, using Linux fixed-address guarded RAM/Flash and ASan/UBSan. It tests
 startup, software STOP/RUN, update inhibit, status bits, clock relay output scans,
 all basic contact families, extended X/S/T/C/special-M mapping, full-range coils,
